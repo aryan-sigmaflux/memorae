@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     ai_model: str = "anthropic/claude-opus-4"
     ocr_model: str = "openai/gpt-4o-mini"
+
+    @property
+    def is_development(self) -> bool:
+        return self.app_env == "development"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
     ai_max_tokens: int = 1024
     openrouter_site_url: str = ""
     openrouter_site_name: str = "Memorae"
