@@ -13,18 +13,15 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://user:password@localhost:5432/memorae"
 
-    # WhatsApp
-    wa_phone_number_id: str = ""
-    wa_access_token: str = ""
-    wa_verify_token: str = "memorae_verify"
-
-    @property
-    def wa_api_base(self) -> str:
-        return "https://graph.facebook.com/v19.0"
+    # Telegram
+    telegram_bot_token: str = ""
+    telegram_webhook_url: str = ""
+    allowed_chat_ids: list[int] = []
 
     # AI (OpenRouter)
     openrouter_api_key: str = ""
     ai_model: str = "anthropic/claude-opus-4"
+    ocr_model: str = "openai/gpt-4o-mini"
     ai_max_tokens: int = 1024
     openrouter_site_url: str = ""
     openrouter_site_name: str = "Memorae"
@@ -36,6 +33,7 @@ class Settings(BaseSettings):
     # Google
     google_client_id: str = ""
     google_client_secret: str = ""
+    google_client_secrets_file: str = "client_secret.json"
     google_redirect_uri: str = "http://localhost:8000/auth/google/callback"
 
     # Toon / persona
@@ -44,7 +42,7 @@ class Settings(BaseSettings):
 
     # Reminders
     reminder_check_interval_minutes: int = 1
-    default_timezone: str = "UTC"
+    default_timezone: str = "Asia/Kolkata"
 
     @property
     def is_production(self) -> bool:

@@ -4,13 +4,14 @@
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";   -- fuzzy text search on KB entries
+CREATE EXTENSION IF NOT EXISTS "vector";    -- pgvector for semantic search
 
 -- ── Users ─────────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    wa_phone        TEXT UNIQUE NOT NULL,          -- WhatsApp phone number (E.164)
+    telegram_id     TEXT UNIQUE NOT NULL,          -- Telegram User ID
     display_name    TEXT,
-    timezone        TEXT NOT NULL DEFAULT 'UTC',
+    timezone        TEXT NOT NULL DEFAULT 'Asia/Kolkata',
     google_tokens   JSONB,                         -- {access_token, refresh_token, expiry}
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -33,7 +34,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT NOT NULL,
     media_url       TEXT,
     media_type      TEXT,                          -- image | audio | document
-    wa_message_id   TEXT UNIQUE,                   -- dedup on WA's own ID
+    telegram_message_id TEXT UNIQUE,               -- dedup on Telegram's own ID
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at DESC);
@@ -44,9 +45,11 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     title           TEXT NOT NULL,
     content         TEXT NOT NULL,
+    media_url       TEXT,
+    media_type      TEXT,
     tags            TEXT[] DEFAULT '{}',
-    embedding       JSONB,                         -- vector stored as JSON array (swap for pgvector when available)
-    source          TEXT DEFAULT 'manual',         -- manual | whatsapp | calendar | media
+    embedding       vector(768),                   -- pgvector semantic embedding (nomic-embed-text)
+    source          TEXT DEFAULT 'manual',         -- manual | telegram | calendar | media
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

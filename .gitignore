@@ -125,6 +125,9 @@ celerybeat.pid
 env/
 venv/
 ENV/
+
+# Local media uploads
+media_bucket/
 env.bak/
 venv.bak/
 

@@ -30,44 +30,23 @@ async def handle_image(
     settings = get_settings()
 
     b64 = base64.standard_b64encode(image_bytes).decode()
-
-    if settings.ai_provider == "anthropic":
-        import anthropic
-        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-        response = await client.messages.create(
-            model=settings.ai_model,
-            max_tokens=512,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": mime_type, "data": b64},
-                        },
-                        {"type": "text", "text": "Describe this image briefly and extract any text you see."},
-                    ],
-                }
-            ],
-        )
-        return response.content[0].text
-    else:
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI(api_key=settings.openai_api_key)
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=512,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
-                        {"type": "text", "text": "Describe this image briefly and extract any text you see."},
-                    ],
-                }
-            ],
-        )
-        return response.choices[0].message.content or ""
+    
+    from services.ai import _client
+    client = _client()
+    response = await client.chat.completions.create(
+        model=settings.ocr_model,
+        max_tokens=512,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}},
+                    {"type": "text", "text": "Describe this image briefly and extract any text you see."},
+                ],
+            }
+        ],
+    )
+    return response.choices[0].message.content or ""
 
 
 async def handle_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
@@ -84,12 +63,29 @@ async def handle_document(doc_bytes: bytes, mime_type: str = "application/pdf") 
     if mime_type == "application/pdf":
         try:
             import pdfplumber
+            import io
             with pdfplumber.open(io.BytesIO(doc_bytes)) as pdf:
                 pages_text = [page.extract_text() or "" for page in pdf.pages]
-            return "\n".join(pages_text)[:4000]
+                raw_text = "\n".join(pages_text).strip()
+                
+                # Extract first page as physical image and force Vision OCR on it
+                im = pdf.pages[0].to_image(resolution=100).original
+                img_io = io.BytesIO()
+                im.save(img_io, format="JPEG")
+                img_bytes = img_io.getvalue()
+                
+            # Run the derived image bytes back through your dedicated OCR handler
+            ocr_text = await handle_image(img_bytes, "image/jpeg")
+            
+            # Pure Vision OCR response only
+            return ocr_text.strip()
+            
         except ImportError:
             logger.warning("pdfplumber not installed; returning raw bytes hint")
             return "[PDF content – install pdfplumber to extract text]"
+        except Exception as exc:
+            logger.error("Error processing PDF OCR: %s", exc)
+            return "[PDF Processing Error]"
 
     return f"[Unsupported document type: {mime_type}]"
 

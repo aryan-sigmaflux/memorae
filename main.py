@@ -1,5 +1,5 @@
 """
-Memorae – WhatsApp AI assistant backend.
+Memorae – Telegram AI assistant backend.
 """
 from __future__ import annotations
 
@@ -19,6 +19,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Show logs from libraries if needed
+# for _lib in ["httpcore","httpx","telegram.Bot","sqlalchemy.engine","urllib3",
+#              "googleapiclient.discovery","google.auth.transport.requests",
+#              "openai._base_client","apscheduler.scheduler","apscheduler.executors.default"]:
+#     logging.getLogger(_lib).setLevel(logging.WARNING)
+
 settings = get_settings()
 
 
@@ -37,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Memorae",
-    description="WhatsApp AI assistant with memory, reminders, and calendar integration.",
+    description="Telegram AI assistant with memory, reminders, and calendar integration.",
     version="0.1.0",
     lifespan=lifespan,
     docs_url="/docs" if not settings.is_production else None,
@@ -51,6 +58,13 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+import os
+from fastapi.staticfiles import StaticFiles
+
+# Mount local media bucket
+os.makedirs("media_bucket", exist_ok=True)
+app.mount("/media", StaticFiles(directory="media_bucket"), name="media")
 
 # Routers
 app.include_router(webhook.router)

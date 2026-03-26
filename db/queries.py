@@ -24,10 +24,10 @@ def _rows(rs: Any) -> list[dict]:
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 
-async def get_or_create_user(db: AsyncSession, wa_phone: str, display_name: str | None = None) -> dict:
+async def get_or_create_user(db: AsyncSession, telegram_id: str, display_name: str | None = None) -> dict:
     row = await db.execute(
-        text("SELECT * FROM users WHERE wa_phone = :phone"),
-        {"phone": wa_phone},
+        text("SELECT * FROM users WHERE telegram_id = :telegram_id"),
+        {"telegram_id": telegram_id},
     )
     user = _row(row.fetchone())
     if user:
@@ -35,9 +35,9 @@ async def get_or_create_user(db: AsyncSession, wa_phone: str, display_name: str 
 
     row = await db.execute(
         text(
-            "INSERT INTO users (wa_phone, display_name) VALUES (:phone, :name) RETURNING *"
+            "INSERT INTO users (telegram_id, display_name) VALUES (:telegram_id, :name) RETURNING *"
         ),
-        {"phone": wa_phone, "name": display_name},
+        {"telegram_id": telegram_id, "name": display_name},
     )
     return _row(row.fetchone())
 
@@ -92,23 +92,23 @@ async def save_message(
     user_id: str,
     role: str,
     content: str,
-    wa_message_id: str | None = None,
+    telegram_message_id: str | None = None,
     media_url: str | None = None,
     media_type: str | None = None,
 ) -> dict:
     row = await db.execute(
         text(
             "INSERT INTO messages "
-            "(conversation_id, user_id, role, content, wa_message_id, media_url, media_type) "
-            "VALUES (:cid, :uid, :role, :content, :wid, :murl, :mtype) "
-            "ON CONFLICT (wa_message_id) DO NOTHING RETURNING *"
+            "(conversation_id, user_id, role, content, telegram_message_id, media_url, media_type) "
+            "VALUES (:cid, :uid, :role, :content, :tid, :murl, :mtype) "
+            "ON CONFLICT (telegram_message_id) DO NOTHING RETURNING *"
         ),
         {
             "cid": conversation_id,
             "uid": user_id,
             "role": role,
             "content": content,
-            "wid": wa_message_id,
+            "tid": telegram_message_id,
             "murl": media_url,
             "mtype": media_type,
         },
@@ -137,28 +137,66 @@ async def create_kb_entry(
     title: str,
     content: str,
     tags: list[str] | None = None,
+    embedding: list[float] | None = None,
     source: str = "manual",
+    media_url: str | None = None,
+    media_type: str | None = None,
 ) -> dict:
+    emb_str = str(embedding) if embedding else None
+
     row = await db.execute(
         text(
-            "INSERT INTO kb_entries (user_id, title, content, tags, source) "
-            "VALUES (:uid, :title, :content, :tags, :source) RETURNING *"
+            "INSERT INTO kb_entries (user_id, title, content, tags, embedding, source, media_url, media_type) "
+            "VALUES (:uid, :title, :content, :tags, CAST(:emb AS vector), :src, :url, :type) RETURNING *"
         ),
-        {"uid": user_id, "title": title, "content": content, "tags": tags or [], "source": source},
+        {
+            "uid": user_id,
+            "title": title,
+            "content": content,
+            "tags": tags or [],
+            "emb": emb_str,
+            "src": source,
+            "url": media_url,
+            "type": media_type,
+        },
     )
     return _row(row.fetchone())
 
 
-async def search_kb(db: AsyncSession, user_id: str, query: str, limit: int = 5) -> list[dict]:
+async def search_kb(db: AsyncSession, user_id: str, query: str, limit: int = 5, embedding: list[float] | None = None) -> list[dict]:
+    """
+    Search KB entries using semantic search via pgvector.
+    Results are ranked by cosine distance (embedding <=> :emb).
+    """
+    if embedding:
+        emb_str = str(embedding)
+        rows = await db.execute(
+            text(
+                "SELECT *, 1 - (embedding <=> CAST(:emb AS vector)) AS similarity_score "
+                "FROM kb_entries "
+                "WHERE user_id = :uid AND embedding IS NOT NULL "
+                "ORDER BY embedding <=> CAST(:emb AS vector) "
+                "LIMIT :lim"
+            ),
+            {"uid": user_id, "emb": emb_str, "lim": limit},
+        )
+        results = _rows(rows.fetchall())
+        if results:
+            return results
+
+    # Fallback: if no embeddings exist or semantic search yields nothing, return the most recent entries 
+    # to act as a "working memory" context for the AI, so it can deduce answers fluidly.
     rows = await db.execute(
         text(
-            "SELECT *, similarity(content, :q) AS score FROM kb_entries "
-            "WHERE user_id = :uid AND content % :q "
-            "ORDER BY score DESC LIMIT :lim"
+            "SELECT * FROM kb_entries "
+            "WHERE user_id = :uid "
+            "ORDER BY updated_at DESC LIMIT :lim"
         ),
-        {"uid": user_id, "q": query, "lim": limit},
+        {"uid": user_id, "lim": limit},
     )
-    return _rows(rows.fetchall())
+    results = _rows(rows.fetchall())
+
+    return results
 
 
 async def list_kb_entries(db: AsyncSession, user_id: str, tag: str | None = None) -> list[dict]:
@@ -215,7 +253,7 @@ async def create_reminder(
 
 async def get_due_reminders(db: AsyncSession) -> list[dict]:
     rows = await db.execute(
-        text("SELECT r.*, u.wa_phone FROM reminders r JOIN users u ON u.id = r.user_id "
+        text("SELECT r.*, u.telegram_id FROM reminders r JOIN users u ON u.id = r.user_id "
              "WHERE r.remind_at <= NOW() AND r.sent = FALSE ORDER BY r.remind_at"),
     )
     return _rows(rows.fetchall())
@@ -228,12 +266,50 @@ async def mark_reminder_sent(db: AsyncSession, reminder_id: str) -> None:
     )
 
 
+async def update_reminder_at(db: AsyncSession, reminder_id: str, next_at: datetime) -> None:
+    await db.execute(
+        text("UPDATE reminders SET remind_at = :at WHERE id = :id"),
+        {"at": next_at, "id": reminder_id},
+    )
+
+
+async def update_most_recent_reminder(db: AsyncSession, user_id: str, remind_at: datetime) -> dict | None:
+    """Update the most recently created reminder for this user."""
+    row = await db.execute(
+        text(
+            "UPDATE reminders SET remind_at = :at "
+            "WHERE id = (SELECT id FROM reminders WHERE user_id = :uid ORDER BY created_at DESC LIMIT 1) "
+            "RETURNING *"
+        ),
+        {"at": remind_at, "uid": user_id},
+    )
+    return _row(row.fetchone()) or None
+
+
 async def list_reminders(db: AsyncSession, user_id: str) -> list[dict]:
     rows = await db.execute(
         text("SELECT * FROM reminders WHERE user_id = :uid AND sent = FALSE ORDER BY remind_at"),
         {"uid": user_id},
     )
     return _rows(rows.fetchall())
+
+
+async def delete_all_reminders(db: AsyncSession, user_id: str) -> int:
+    """DELETE FROM reminders WHERE user_id = $1 AND sent = FALSE. Returns count."""
+    result = await db.execute(
+        text("DELETE FROM reminders WHERE user_id = :uid AND sent = FALSE"),
+        {"uid": user_id},
+    )
+    return result.rowcount
+
+
+async def delete_reminder_by_query(db: AsyncSession, user_id: str, query: str) -> int:
+    """DELETE FROM reminders WHERE user_id = $1 AND sent = FALSE AND title ILIKE '%{query}%'. Returns count."""
+    result = await db.execute(
+        text("DELETE FROM reminders WHERE user_id = :uid AND sent = FALSE AND title ILIKE :q"),
+        {"uid": user_id, "q": f"%{query}%"},
+    )
+    return result.rowcount
 
 
 # ── Patches ───────────────────────────────────────────────────────────────────

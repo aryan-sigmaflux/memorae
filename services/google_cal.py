@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from google.auth.transport.requests import Request
@@ -19,8 +20,11 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 SCOPES = [
-    "https://www.googleapis.com/auth/calendar",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/meetings.space.created",
+    "https://www.googleapis.com/auth/contacts.readonly"
 ]
 
 CLIENT_CONFIG = {
@@ -72,6 +76,8 @@ def _build_service(token_dict: dict):
     expiry = None
     if token_dict.get("expiry"):
         expiry = datetime.fromisoformat(token_dict["expiry"])
+        if expiry.tzinfo:
+            expiry = expiry.astimezone(timezone.utc).replace(tzinfo=None)
 
     creds = Credentials(
         token=token_dict["token"],
@@ -96,6 +102,7 @@ async def create_event(
     duration_minutes: int = 60,
     description: str = "",
     timezone: str = "UTC",
+    attendee_email: str | None = None,
 ) -> tuple[dict, dict]:
     """
     Create a Calendar event.
@@ -104,15 +111,29 @@ async def create_event(
     service, creds = _build_service(token_dict)
 
     start_dt = datetime.fromisoformat(start_iso)
-    end_dt = start_dt + timedelta(minutes=duration_minutes)
+    end_dt = start_dt + timedelta(minutes=duration_minutes or 60)
 
     event_body = {
         "summary": title,
         "description": description,
         "start": {"dateTime": start_dt.isoformat(), "timeZone": timezone},
         "end": {"dateTime": end_dt.isoformat(), "timeZone": timezone},
+        "conferenceData": {
+            "createRequest": {
+                "requestId": str(uuid.uuid4()),
+                "conferenceSolutionKey": {"type": "hangoutsMeet"}
+            }
+        }
     }
-    event = service.events().insert(calendarId="primary", body=event_body).execute()
+    if attendee_email:
+        event_body["attendees"] = [{"email": attendee_email}]
+
+    event = service.events().insert(
+        calendarId="primary", 
+        body=event_body, 
+        conferenceDataVersion=1, 
+        sendUpdates="all" if attendee_email else "none"
+    ).execute()
     logger.info("Calendar event created: %s", event.get("id"))
     return event, _creds_to_dict(creds)
 
