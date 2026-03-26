@@ -7,8 +7,9 @@ class Settings(BaseSettings):
 
     # App
     app_env: str = "development"
-    secret_key: str = "changeme"
-    api_base_url: str = "http://localhost:8000"
+    secret_key: str = "4RDhsP6qpINMZdgxgeXx16E0"
+    port: int = 8003
+    api_base_url: str = "https://memo.sigmaflux.in/api"
 
     # Database
     database_url: str = "postgresql+asyncpg://user:password@localhost:5432/memorae"
