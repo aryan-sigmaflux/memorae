@@ -2,8 +2,6 @@
 -- Memorae – Database Schema
 -- ─────────────────────────────────────────────────────────────────────────────
 
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-CREATE EXTENSION IF NOT EXISTS "pg_trgm";   -- fuzzy text search on KB entries
 CREATE EXTENSION IF NOT EXISTS "vector";    -- pgvector for semantic search
 
 -- ── Users ─────────────────────────────────────────────────────────────────────
@@ -55,7 +53,7 @@ CREATE TABLE IF NOT EXISTS kb_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_user  ON kb_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_kb_tags  ON kb_entries USING GIN(tags);
-CREATE INDEX IF NOT EXISTS idx_kb_trgm  ON kb_entries USING GIN(content gin_trgm_ops);
+-- trgm search disabled on aapanel
 
 -- ── Reminders ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS reminders (
