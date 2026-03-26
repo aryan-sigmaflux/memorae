@@ -21,8 +21,8 @@ class Settings(BaseSettings):
 
     # AI (OpenRouter)
     openrouter_api_key: str = ""
-    ai_model: str = "anthropic/claude-opus-4"
-    ocr_model: str = "openai/gpt-4o-mini"
+    ai_model: str = "openai/gpt-4o-mini"
+    ocr_model: str = "mistralai/mistral-small-3.2-24b-instruct"
 
     @property
     def is_development(self) -> bool:
