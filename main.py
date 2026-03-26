@@ -66,11 +66,13 @@ from fastapi.staticfiles import StaticFiles
 os.makedirs("media_bucket", exist_ok=True)
 app.mount("/media", StaticFiles(directory="media_bucket"), name="media")
 
-# Routers
-app.include_router(webhook.router)
-app.include_router(auth.router)
+# Routers (all prefixed with /api to match the proxy)
+app.include_router(webhook.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
 
 
+@app.get("/api/", tags=["health"])
+@app.get("/api", tags=["health"])
 @app.get("/", tags=["health"])
 async def health() -> dict:
     return {"status": "ok", "service": "memorae"}
