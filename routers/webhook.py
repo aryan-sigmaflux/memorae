@@ -233,8 +233,8 @@ async def _handle_message(update: Update, display_name: str | None, tg: Any) -> 
         parsed = await parse_intent(user_text, history_msgs)
         logger.info("🎯 INTENT: %s", parsed.intent)
         
-        # If the user denies or moves on, clear their pending state (unless intent is CONFIRM_SAVE)
-        if parsed.intent != Intent.CONFIRM_SAVE and user_id in pending_saves:
+        # If the user denies or moves on, clear their pending state (unless intent is CONFIRM_SAVE or REMEMBER)
+        if parsed.intent not in (Intent.CONFIRM_SAVE, Intent.REMEMBER) and user_id in pending_saves:
             # We only clear it if they replied to something else, ignoring the media prompt
             if not is_media:
                 pending_saves.pop(user_id, None)
@@ -272,7 +272,14 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
     # ── Remember ──────────────────────────────────────────────────────────────
     if intent == Intent.REMEMBER:
         text_to_save = payload.get("content_to_save") or parsed.raw
-        entry = await remember(db, user_id, text_to_save)
+        
+        if user_id in pending_saves:
+            p = pending_saves.pop(user_id)
+            combined_text = f"User Instruction: {text_to_save}\n\nDocument Content:\n{p['user_text']}"
+            entry = await remember(db, user_id, combined_text, media_url=p["media_url"], media_type=p["media_type"])
+        else:
+            entry = await remember(db, user_id, text_to_save)
+            
         return f"Got it! I've saved this to your notes: \"{entry['title']}\""
 
     # ── Confirm Save ──────────────────────────────────────────────────────────
