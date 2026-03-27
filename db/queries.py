@@ -176,13 +176,34 @@ async def search_kb(db: AsyncSession, user_id: str, query: str, limit: int = 5, 
                 "FROM kb_entries "
                 "WHERE user_id = :uid AND embedding IS NOT NULL "
                 "ORDER BY embedding <=> CAST(:emb AS vector) "
-                "LIMIT :lim"
+                "LIMIT 15"
             ),
-            {"uid": user_id, "emb": emb_str, "lim": limit},
+            {"uid": user_id, "emb": emb_str},
         )
         results = _rows(rows.fetchall())
         if results:
-            return results
+            import re
+            query_words = set(re.findall(r'\w+', query.lower()))
+            query_numbers = set(re.findall(r'\d+', query))
+            
+            def score(r: dict) -> float:
+                s = r.get("similarity_score", 0.0)
+                title = (r.get("title") or "").lower()
+                title_numbers = set(re.findall(r'\d+', title))
+                
+                # Big boost for matching numbers (crucial for differentiating like Sem 1 vs Sem 2)
+                for num in query_numbers:
+                    if num in title_numbers:
+                        s += 0.3
+                        
+                # Small boost for overlapping words
+                title_words = set(re.findall(r'\w+', title))
+                overlap = len(query_words.intersection(title_words))
+                s += 0.02 * overlap
+                return s
+                
+            results.sort(key=score, reverse=True)
+            return results[:limit]
 
     # Fallback: if no embeddings exist or semantic search yields nothing, return the most recent entries 
     # to act as a "working memory" context for the AI, so it can deduce answers fluidly.

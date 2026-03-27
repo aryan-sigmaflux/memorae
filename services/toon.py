@@ -85,6 +85,7 @@ CRITICAL RULE:
 - For 'delete_reminders': if the user says "cancel all reminders", "delete all reminders", "clear my reminders", "remove all reminders" or similar, map to delete_reminders. Set 'query' to null for "all", or a search string for specific ones.
 - The word 'save' in a retrieval request (e.g., 'send the file I saved') MUST be interpreted as RECALL.
 - When saving a document (remember), derive the title from BOTH the user's label (e.g. 'sem 1 gazette') AND the document content. Format: '{user_label} - {institution} - {date}'. NEVER use a generic title when the user has explicitly named the document.
+- If the user asks to list, see, or show saved items, files, notes, or documents (e.g., 'List all the gazettes you have'), map the intent to 'recall' with the item type as the query (e.g., 'gazettes'). Only use 'list_reminders' if they specifically ask for reminders, alarms, or tasks.
 """
 
 
