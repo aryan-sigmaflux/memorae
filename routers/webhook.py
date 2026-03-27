@@ -288,6 +288,7 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
     # ── Recall ────────────────────────────────────────────────────────────────
     if intent == Intent.RECALL:
         query = payload.get("query", parsed.raw)
+        logger.info(f"Recall query: {query}")
         results = await recall(db, user_id, query)
         
         # If no results and query implies media, fallback to recent media
@@ -356,6 +357,7 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
             f"Here are relevant fresh entries from their personal notes database:\n{kb_context}\n\n"
             "CRITICAL: When answering a specific question:\n"
             "- If the saved notes contain an entry that explicitly matches the type of information the user asked for (same label or clear context), answer directly and confidently. Example: user asks 'what is my roll number' and notes contain 'Student Roll Number: 77' → respond 'Your student roll number is 77.'\n"
+            "- If the user asks to 'send' or 'show' a saved document, return its FULL content verbatim, not a summary. Do not describe it — show it.\n"
             "- Only use the hedging response ('I don't have that saved. I do have X — is that what you meant?') when the notes contain a NUMBER or VALUE but its context does NOT match what was asked. Example: user asks 'roll number' but only vehicle numbers are saved.\n"
             "- Never hedge when you have an exact or near-exact context match.\n\n"
             "CRITICAL RULE: ALWAYS use these fresh database entries as the sole source of truth. Ignore any older values that might appear in the conversation history or your memory.\n"
@@ -502,7 +504,7 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
     # ── Fallback: general chat with conversation history ──────────────────────
     # Always check KB for relevant context before chatting
     from db.queries import search_kb
-    kb_results = await search_kb(db, user_id=user_id, query=parsed.raw, limit=3)
+    kb_results = await search_kb(db, user_id=user_id, query=parsed.raw, limit=20)
     system = get_system_prompt()
     if kb_results:
         kb_context = "\n".join([f"- {r['title']}: {r['content']}" for r in kb_results])

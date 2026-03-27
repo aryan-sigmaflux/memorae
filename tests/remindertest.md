@@ -19,7 +19,7 @@ This document lists test cases for the Reminder feature, covering natural langua
 - "Set a reminder for 2026-12-31 at 23:59"
 
 ## 4. Complex Natural Language
-- "Hey Memorae, can you remind me to pick up the laundry at 6 PM this Friday?"
+- "Hey Memo, can you remind me to pick up the laundry at 6 PM this Friday?"
 - "don't forget to remind me to take my medicine at 8 am and 8 pm" (Testing if it handles multiple, though current handles one at a time)
 
 ## 5. Recurring Reminders

@@ -140,14 +140,16 @@ async def extract_kb_fields(text: str) -> dict:
     prompt = (
         "Extract a knowledge base entry from the following text. "
         'Return JSON: {"title": str, "content": str, "tags": [str]}. '
-        "CRITICAL FOR TITLING: The 'title' MUST be a concise, descriptive name of the actual information (e.g., 'Aadhaar Card - Aryan' or 'Physics Lecture Notes'). "
-        "NEVER use generic commands like 'Save this', 'Remember this', 'Note', or 'Untitled' if there is real content to name. "
+        "CRITICAL FOR TITLING: Derive the 'title' from BOTH the user's label (e.g. 'sem 1 gazette') AND the document content. "
+        "Format: '{user_label} - {institution} - {date}'. "
+        "Example: 'Semester 1 Gazette - Thakur College - December 2023'. "
+        "NEVER use a generic title when the user has explicitly named the document. "
         "IMPORTANT: If the text contains a file path tag like (LOCAL_PATH: media_bucket/...), you MUST include that exact tag in the 'content' field. Do not discard it. "
         "Be concise. Text:\n\n" + text
     )
     raw = await complete(
         messages=[{"role": "user", "content": prompt}],
-        system="You are a precise information extractor. You name documents based on their actual subject matter, ignoring generic save commands. Return only valid JSON.",
+        system="You are a precise information extractor. You name documents based on both user labels and provided content, ensuring specific context is preserved. Return only valid JSON.",
         max_tokens=500,
         json_mode=True,
     )

@@ -65,8 +65,7 @@ You are an intent parser. Given the conversational history and a new user messag
 {
   "intent": one of [chat, remember, recall, remind, list_reminders, add_calendar, show_calendar, forget, connect_google, delete_reminders],
   "payload": {
-    // for remember:  { "content_to_save": "Exact text/data from the conversation to save (include any LOCAL_PATH context if applicable)" }
-    // for recall:    { "query": str }
+    // for recall:    { "query": str } // When user labels a specific document (e.g. 'sem 1 gazette'), 'query' must be that specific label (e.g. 'Semester 1 Gazette') not just 'gazette'.
     // for remind:    { "title": str, "datetime_str": str, "body": str|null, "recurrence": "daily"|"weekly"|"hourly"|"monthly"|null }
     // for add_calendar: { "title": str, "datetime_str": str, "duration_minutes": int|null, "attendee_email": str|null }
     // for forget:    { "query": str }
@@ -76,6 +75,7 @@ You are an intent parser. Given the conversational history and a new user messag
 }
 Return only valid JSON, nothing else. 
 CRITICAL RULE: 
+- For 'recall': if the user mentions a specific label or number (e.g., 'semester 1'), ensure it is included in the query. Example: 'send semester 1 gazette' -> query: 'Semester 1 Gazette'.
 - For 'remind': if the user mentions recurring patterns like 'every day', 'every morning', 'every night', 'daily', 'every hour', 'weekly', etc., set 'recurrence' to the appropriate keyword ('daily', 'hourly', 'weekly') AND KEEP only the time/base-date part in 'datetime_str' (e.g. '6:07pm').
 - For 'remind': ALWAYS infer a short, descriptive string for 'title' from the message context. NEVER return null for 'title'. If the message is very short, use the entire message as the title.
 - For 'remind' or 'add_calendar': if the user explicitly mentions a DATE with a YEAR (e.g., 'March 20 2026'), you MUST return 'datetime_str' as a full ISO 8601 string (e.g., '2026-03-20T18:25:00'). NEVER roll over to the next day if a year is stated.
@@ -83,7 +83,8 @@ CRITICAL RULE:
 - If the conversational bot just asked the user "Want me to save this?" and the user replied "yes", "yeah", "save it", "sure", etc., map it to "confirm_save".
 - If the user says 'send me the image', 'show me that photo', 'retrieve the file', it is 'recall'. 
 - For 'delete_reminders': if the user says "cancel all reminders", "delete all reminders", "clear my reminders", "remove all reminders" or similar, map to delete_reminders. Set 'query' to null for "all", or a search string for specific ones.
-The word 'save' in a retrieval request (e.g., 'send the file I saved') MUST be interpreted as RECALL.
+- The word 'save' in a retrieval request (e.g., 'send the file I saved') MUST be interpreted as RECALL.
+- When saving a document (remember), derive the title from BOTH the user's label (e.g. 'sem 1 gazette') AND the document content. Format: '{user_label} - {institution} - {date}'. NEVER use a generic title when the user has explicitly named the document.
 """
 
 
