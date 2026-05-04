@@ -188,3 +188,47 @@ def format_calendar_events(events: list[dict]) -> str:
         start = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "?")
         lines.append(f"• {e['summary']} at {start}")
     return "\n".join(lines)
+
+
+# ── TOON encoder for notes lane ──────────────────────────────────────────────
+
+def encode_notes_toon(entries: list[dict]) -> tuple[str, dict[str, str]]:
+    """Encode KB entry dicts into TOON format for the notes system prompt.
+
+    Returns:
+        (toon_string, id_map)
+        id_map: {"n_001": "<uuid>", ...}  — for resolving patch IDs back to DB
+    """
+    if not entries:
+        return "(no notes saved yet)", {}
+
+    id_map: dict[str, str] = {}
+    lines: list[str] = []
+
+    for idx, entry in enumerate(entries, 1):
+        short_id = f"n_{idx:03d}"
+        real_id = str(entry.get("id", ""))
+        id_map[short_id] = real_id
+
+        lines.append("---")
+        lines.append(f"id: {short_id}")
+
+        # Encode all note-relevant fields
+        for key in ("title", "content", "tags", "context_clues",
+                     "status", "source_message", "created_at", "updated_at"):
+            val = entry.get(key)
+            if val is None:
+                continue
+            if isinstance(val, list):
+                val = ", ".join(str(v) for v in val)
+            elif hasattr(val, "isoformat"):
+                val = val.isoformat()
+            lines.append(f"{key}: {val}")
+
+    lines.append("---")
+    return "\n".join(lines), id_map
+
+
+def next_note_id(id_map: dict[str, str]) -> str:
+    """Return the next available n_XXX id given the current map."""
+    return f"n_{len(id_map) + 1:03d}"

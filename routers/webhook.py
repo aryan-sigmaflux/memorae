@@ -25,6 +25,7 @@ from db.queries import (
 from services.ai import complete, parse_intent, parse_datetime
 from services.kb import forget, recall, remember
 from services.media import process_media
+from services.notes_lane import handle_notes
 from services.toon import (
     Intent,
     format_calendar_events,
@@ -271,16 +272,15 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
 
     # ── Remember ──────────────────────────────────────────────────────────────
     if intent == Intent.REMEMBER:
-        text_to_save = payload.get("content_to_save") or parsed.raw
-        
+        # If there's a pending media upload, use the old direct-save flow
         if user_id in pending_saves:
             p = pending_saves.pop(user_id)
+            text_to_save = payload.get("content_to_save") or parsed.raw
             combined_text = f"User Instruction: {text_to_save}\n\nDocument Content:\n{p['user_text']}"
             entry = await remember(db, user_id, combined_text, media_url=p["media_url"], media_type=p["media_type"])
-        else:
-            entry = await remember(db, user_id, text_to_save)
-            
-        return f"Got it! I've saved this to your notes: \"{entry['title']}\""
+            return f"Got it! I've saved this to your notes: \"{entry['title']}\""
+        # Otherwise, route through notes lane for agentic handling
+        return await handle_notes(db, user_id, parsed.raw, history_msgs)
 
     # ── Confirm Save ──────────────────────────────────────────────────────────
     if intent == Intent.CONFIRM_SAVE:
@@ -322,23 +322,18 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
                 "media_url": pending["media_url"],
                 "media_type": pending["media_type"]
             }]
-            
-        if not results:
-            return "I couldn't find anything relevant in your notes."
-            
-        # Check if any entry has a natively saved file path
-        # If yes, resolve the file path and send the media natively with the content as caption.
+
+        # ── Media dispatch (unchanged) ────────────────────────────────────
+        # If results contain media files the user asked for, dispatch them natively
         from services.telegram import get_telegram_client
         tg = get_telegram_client()
         media_dispatched = False
         
-        # Only dispatch files natively if the user explicitly asked to "send/show/give/fetch/see" it.
         fetch_keywords = {"send", "show", "give", "display", "get", "fetch", "see", "retrieve", "image", "photo", "file", "pdf"}
         is_fetch_request = any(kw in parsed.raw.lower() for kw in fetch_keywords)
         is_question = "?" in parsed.raw or any(kw in parsed.raw.lower() for kw in ["what", "how", "who", "where", "why", "tell"])
         
-        # Native dispatch only if it's a retrieval request and NOT just a general question about content
-        if is_fetch_request or not is_question:
+        if results and (is_fetch_request or not is_question):
             for r in results:
                 if r.get("media_url"):
                     local_path = r["media_url"].lstrip("/").replace("media/", "media_bucket/")
@@ -353,44 +348,22 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
                             else:
                                 await tg.bot.send_document(chat_id=chat_id, document=f)
                         media_dispatched = True
-                        break # Usually we only dispatch the single best match 
+                        break
                     except Exception as e:
                         logger.error("Failed to native-send recalled media file: %s", e)
-        
-        # Feed the KB results as context to the AI so it answers the question naturally
-        kb_context = "\n".join([f"- {r['title']}: {r['content']}" for r in results[:5]])
-        context_prompt = (
-            f"The user asked: \"{parsed.raw}\"\n\n"
-            f"Here are relevant fresh entries from their personal notes database:\n{kb_context}\n\n"
-            "CRITICAL: When answering a specific question:\n"
-            "- If the saved notes contain an entry that explicitly matches the type of information the user asked for (same label or clear context), answer directly and confidently. Example: user asks 'what is my roll number' and notes contain 'Student Roll Number: 77' → respond 'Your student roll number is 77.'\n"
-            "- If the user asks to 'send' or 'show' a saved document, return its FULL content verbatim, not a summary. Do not describe it — show it.\n"
-            "- Only use the hedging response ('I don't have that saved. I do have X — is that what you meant?') when the notes contain a NUMBER or VALUE but its context does NOT match what was asked. Example: user asks 'roll number' but only vehicle numbers are saved.\n"
-            "- Never hedge when you have an exact or near-exact context match.\n\n"
-            "CRITICAL RULE: ALWAYS use these fresh database entries as the sole source of truth. Ignore any older values that might appear in the conversation history or your memory.\n"
-            "Answer the user's question using ONLY the fresh information from their notes above. "
-            "Be concise and direct."
-        )
-        
-        system = get_system_prompt()
+
         if media_dispatched:
-             system += "\nCRITICAL RULE: We already sent the user their requested file natively! If they ONLY asked an imperative like 'send me the image', 'fetch the file', 'show the photo', return exactly '[SILENT]' and NOTHING else. But if they asked a QUESTION about the file content (like 'tell me about the image'), you MUST answer using the OCR context text!"
-        
-        raw_final = await complete(
-            messages=[{"role": "user", "content": context_prompt}],
-            system=system,
-        )
-        
-        if "[SILENT]" in raw_final:
+            # File already sent natively — only reply if user asked a question about it
+            if is_question and not is_media_query:
+                return await handle_notes(db, user_id, parsed.raw, history_msgs)
             return ""
-            
-        import re
-        return re.sub(r'\[IMAGE\]\(?LOCAL_PATH:\s*media_bucket/[^\s)]+\)?:\s*', '', raw_final).strip()
+
+        # ── Route through notes lane for the actual answer ────────────────
+        return await handle_notes(db, user_id, parsed.raw, history_msgs)
 
     # ── Forget ────────────────────────────────────────────────────────────────
     if intent == Intent.FORGET:
-        deleted = await forget(db, user_id, payload.get("query", parsed.raw))
-        return "Done, I've forgotten that." if deleted else "I couldn't find that in your notes."
+        return await handle_notes(db, user_id, parsed.raw, history_msgs)
 
     # ── Remind ────────────────────────────────────────────────────────────────
     if intent == Intent.REMIND:
@@ -508,25 +481,7 @@ async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]
             await update_user_google_tokens(db, user_id, new_tokens)
             return format_calendar_events(events)
 
-    # ── Fallback: general chat with conversation history ──────────────────────
-    # Always check KB for relevant context before chatting
-    from db.queries import search_kb
-    kb_results = await search_kb(db, user_id=user_id, query=parsed.raw, limit=20)
-    system = get_system_prompt()
-    if kb_results:
-        kb_context = "\n".join([f"- {r['title']}: {r['content']}" for r in kb_results])
-        system += (
-            f"\n\nYou have access to the following freshly fetched personal notes from the database. "
-            "CRITICAL: When answering a specific question:\n"
-            "- If the saved notes contain an entry that explicitly matches the type of information the user asked for (same label or clear context), answer directly and confidently. Example: user asks 'what is my roll number' and notes contain 'Student Roll Number: 77' → respond 'Your student roll number is 77.'\n"
-            "- Only use the hedging response ('I don't have that saved. I do have X — is that what you meant?') when the notes contain a NUMBER or VALUE but its context does NOT match what was asked. Example: user asks 'roll number' but only vehicle numbers are saved.\n"
-            "- Never hedge when you have an exact or near-exact context match.\n\n"
-            "CRITICAL RULE: When answering questions, summarizing, or sorting stored data, ALWAYS use THESE fresh database entries as the sole source of truth. IGNORE older values that might appear in the conversation history! \n\n"
-            f"DATABASE NOTES:\n{kb_context}"
-        )
-
-    # Replace the last user message (already saved) with current
-    if not history_msgs or history_msgs[-1]["role"] != "user":
-        history_msgs.append({"role": "user", "content": parsed.raw})
-
-    return await complete(messages=history_msgs, system=system)
+    # ── Fallback: general chat — route through notes lane ──────────────────
+    # The notes lane includes relevant KB context and handles implicit
+    # CREATE/UPDATE/DELETE detection even in casual messages.
+    return await handle_notes(db, user_id, parsed.raw, history_msgs)

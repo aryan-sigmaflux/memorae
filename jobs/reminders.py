@@ -103,4 +103,4 @@ def stop_scheduler() -> None:
     global _scheduler
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
-        logger.info("Reminder scheduler stopped")
+        logger.info("Reminder scheduler stopped")           

@@ -137,8 +137,11 @@ async def create_kb_entry(
     title: str,
     content: str,
     tags: list[str] | None = None,
+    context_clues: list[str] | None = None,
     embedding: list[float] | None = None,
     source: str = "manual",
+    status: str = "active",
+    source_message: str | None = None,
     media_url: str | None = None,
     media_type: str | None = None,
 ) -> dict:
@@ -146,16 +149,19 @@ async def create_kb_entry(
 
     row = await db.execute(
         text(
-            "INSERT INTO kb_entries (user_id, title, content, tags, embedding, source, media_url, media_type) "
-            "VALUES (:uid, :title, :content, :tags, CAST(:emb AS vector), :src, :url, :type) RETURNING *"
+            "INSERT INTO kb_entries (user_id, title, content, tags, context_clues, embedding, source, status, source_message, media_url, media_type) "
+            "VALUES (:uid, :title, :content, :tags, :ctx, CAST(:emb AS vector), :src, :status, :smsg, :url, :type) RETURNING *"
         ),
         {
             "uid": user_id,
             "title": title,
             "content": content,
             "tags": tags or [],
+            "ctx": context_clues or [],
             "emb": emb_str,
             "src": source,
+            "status": status,
+            "smsg": source_message,
             "url": media_url,
             "type": media_type,
         },

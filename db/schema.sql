@@ -46,8 +46,11 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     media_url       TEXT,
     media_type      TEXT,
     tags            TEXT[] DEFAULT '{}',
+    context_clues   TEXT[] DEFAULT '{}',           -- key nouns/entities for semantic matching
     embedding       vector(768),                   -- pgvector semantic embedding (nomic-embed-text)
     source          TEXT DEFAULT 'manual',         -- manual | telegram | calendar | media
+    status          TEXT DEFAULT 'active',         -- active | done
+    source_message  TEXT,                          -- user's exact original message
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
