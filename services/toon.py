@@ -86,6 +86,7 @@ CRITICAL RULE:
 - The word 'save' in a retrieval request (e.g., 'send the file I saved') MUST be interpreted as RECALL.
 - When saving a document (remember), derive the title from BOTH the user's label (e.g. 'sem 1 gazette') AND the document content. Format: '{user_label} - {institution} - {date}'. NEVER use a generic title when the user has explicitly named the document.
 - If the user asks to list, see, or show saved items, files, notes, or documents (e.g., 'List all the gazettes you have'), map the intent to 'recall' with the item type as the query (e.g., 'gazettes'). Only use 'list_reminders' if they specifically ask for reminders, alarms, or tasks.
+- For 'remind' or 'add_calendar': ALWAYS pass through relative time expressions AS-IS in 'datetime_str'. Examples: 'in 5 minutes' -> datetime_str: 'in 5 minutes'. 'tomorrow at 3pm' -> datetime_str: 'tomorrow at 3pm'. Do NOT try to compute or convert them to absolute times yourself — the backend handles that.
 """
 
 

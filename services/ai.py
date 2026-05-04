@@ -112,8 +112,10 @@ async def parse_intent(user_message: str, history_msgs: list[dict] = None) -> Pa
 
     try:
         from datetime import datetime
+        now_local = datetime.now(USER_TZ)
         dated_system = (
-            f"Today is {datetime.now(USER_TZ).strftime('%Y-%m-%d, %A')}. "
+            f"Today is {now_local.strftime('%Y-%m-%d, %A')}. "
+            f"Current time is {now_local.strftime('%I:%M %p')} ({USER_TZ_LABEL}). "
             f"Timezone is {USER_TZ_LABEL}.\n\n" + INTENT_SYSTEM
         )
         raw_json = await complete(
@@ -125,6 +127,7 @@ async def parse_intent(user_message: str, history_msgs: list[dict] = None) -> Pa
         data = json.loads(raw_json)
         intent = Intent(data.get("intent", "chat"))
         payload = data.get("payload", {})
+        logger.debug("Intent parse result: intent=%s payload=%s", intent, payload)
     except Exception as exc:
         logger.warning("Intent parse failed: %s", exc)
         intent = quick or Intent.CHAT
@@ -193,12 +196,18 @@ async def parse_datetime(datetime_str: str) -> str | None:
         normalized_str = cleaned_str
 
     now_ist = datetime.now(USER_TZ)
+    # dateparser requires a NAIVE datetime for RELATIVE_BASE.
+    # Passing timezone-aware datetimes causes miscalculated relative offsets.
+    naive_base = now_ist.replace(tzinfo=None)
+
+    logger.debug("[DATEPARSER] datetime_str=%r cleaned=%r normalized=%r naive_base=%r",
+                 datetime_str, cleaned_str, normalized_str, naive_base)
 
     import re
     result = dateparser.parse(
         normalized_str,
         settings={
-            "RELATIVE_BASE": now_ist,
+            "RELATIVE_BASE": naive_base,
             "PREFER_DATES_FROM": "future",
             "TIMEZONE": "Asia/Kolkata",
             "RETURN_AS_TIMEZONE_AWARE": True,
@@ -214,7 +223,7 @@ async def parse_datetime(datetime_str: str) -> str | None:
             result = dateparser.parse(
                 f"today at {normalized_str}",
                 settings={
-                    "RELATIVE_BASE": now_ist,
+                    "RELATIVE_BASE": naive_base,
                     "PREFER_DATES_FROM": "future",
                     "TIMEZONE": "Asia/Kolkata",
                     "RETURN_AS_TIMEZONE_AWARE": True,

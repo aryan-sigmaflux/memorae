@@ -258,7 +258,8 @@ async def _handle_message(update: Update, display_name: str | None, tg: Any) -> 
                 logger.error("Failed to send photo: %s", e)
                 await tg.send_text(to=chat_id, text=clean_reply)
         else:
-            await tg.send_text(to=chat_id, text=reply)
+            if reply:
+                await tg.send_text(to=chat_id, text=reply)
 
 async def _route_intent(parsed, db, user, conv_id: str, history_msgs: list[dict]) -> str:
     user_id = str(user["id"])

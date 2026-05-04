@@ -80,14 +80,8 @@ Implicit signals (these must also trigger CREATE silently):
   - Future-action statements
   - Instructions or steps
 
-When you detect an implicit CREATE, confirm before saving:
-  → "Got it — should I save this note?
-     📝 [Short title]
-     'Content preview'
-     Reply YES to save or tell me what to change."
-
-When you detect an explicit CREATE (user said "remember"), save immediately
-without asking for confirmation and reply:
+For ALL CREATE operations (both explicit and implicit), save immediately
+without asking for confirmation. Output the kb_patch and reply:
   → "Saved ✅ [Short title you generated]"
 
 ── UPDATE ─────────────────────────────
@@ -104,6 +98,11 @@ CRITICAL RULE — REFERENTIAL RESOLUTION:
 When the user says "change it", "fix that", or "edit it" WITHOUT specifying
 which note, resolve to the most recently created or discussed note.
 Do not ask "which note?" unless there is genuine ambiguity.
+
+CRITICAL RULE — UPDATE IDs:
+When updating a note, you MUST use the EXISTING note's id from the
+knowledge base above (e.g. n_001, n_003). Do NOT use the next_id
+({next_id}) for updates — that is ONLY for creating brand new notes.
 
 When you detect an UPDATE, apply it and reply:
   → "Updated ✅ [Short title]
@@ -130,6 +129,13 @@ When an implicit completion signal arrives:
       Should I remove it from your notes? Reply YES to delete."
 3. Only issue a DELETE patch after the user confirms.
 4. If no match found, simply acknowledge and do not touch the KB.
+
+CRITICAL: Casual acknowledgments like "great", "ok", "cool", "nice",
+"thanks", "awesome", "perfect", "sounds good", "got it" are NOT
+completion signals. They are just the user reacting to your message.
+Do NOT offer to delete notes when the user says these words.
+Only trigger delete when the user explicitly says something IS DONE
+("I already did X", "finished with X", "that's handled").
 
 NEVER delete anything without explicit user confirmation.
 
@@ -264,13 +270,14 @@ async def _apply_patch(
     user_id: str,
     patch: dict,
     id_map: dict[str, str],
+    notes: list[dict] | None = None,
 ) -> None:
     """Apply a single kb_patch operation to the database."""
     op = patch.get("op")
 
     if op == "multi":
         for sub_patch in patch.get("patches", []):
-            await _apply_patch(db, user_id, sub_patch, id_map)
+            await _apply_patch(db, user_id, sub_patch, id_map, notes)
         return
 
     if op == "add":
@@ -302,8 +309,32 @@ async def _apply_patch(
     elif op == "update":
         short_id = patch.get("id", "")
         real_id = id_map.get(short_id)
+
+        # Fallback: if ID not found, try to match by title from the notes context
+        if not real_id and notes:
+            changes = patch.get("changes", {})
+            patch_title = changes.get("title", "")
+            patch_content = changes.get("content", "")
+            for note in notes:
+                note_title = (note.get("title") or "").lower()
+                # Match if the patch title or content overlaps with the note
+                if patch_title and patch_title.lower() in note_title:
+                    real_id = str(note["id"])
+                    logger.info("Notes lane: resolved unknown id %s to %s via title match '%s'",
+                                short_id, real_id, note_title)
+                    break
+                if patch_content and note_title in patch_content.lower():
+                    real_id = str(note["id"])
+                    logger.info("Notes lane: resolved unknown id %s to %s via content match",
+                                short_id, real_id)
+                    break
+            # Last resort: if only 1 note in context and this is the only update, use it
+            if not real_id and len(notes) == 1:
+                real_id = str(notes[0]["id"])
+                logger.info("Notes lane: resolved unknown id %s to sole note %s", short_id, real_id)
+
         if not real_id:
-            logger.warning("Notes lane: unknown note id %s in update patch", short_id)
+            logger.warning("Notes lane: unknown note id %s in update patch, skipping", short_id)
             return
 
         changes = patch.get("changes", {})
@@ -323,7 +354,7 @@ async def _apply_patch(
                 db_changes["embedding"] = str(embedding) if embedding else None
 
         await q.update_kb_entry(db, entry_id=real_id, user_id=user_id, **db_changes)
-        logger.info("Notes lane: updated note %s for user %s", short_id, user_id)
+        logger.info("Notes lane: updated note %s (%s) for user %s", short_id, real_id, user_id)
 
     elif op == "delete":
         short_id = patch.get("id", "")
@@ -381,7 +412,7 @@ async def handle_notes(
     patches = _extract_patches(raw_response)
     for patch in patches:
         try:
-            await _apply_patch(db, user_id, patch, id_map)
+            await _apply_patch(db, user_id, patch, id_map, notes=relevant_notes)
         except Exception as exc:
             logger.error("Notes lane: failed to apply patch: %s", exc, exc_info=True)
 
