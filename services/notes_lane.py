@@ -285,7 +285,16 @@ async def _apply_patch(
         content = item.get("content", "")
         title = item.get("title", content[:60])
         tags = item.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        elif not isinstance(tags, list):
+            tags = []
+
         context_clues = item.get("context_clues", [])
+        if isinstance(context_clues, str):
+            context_clues = [context_clues]
+        elif not isinstance(context_clues, list):
+            context_clues = []
         source_message = item.get("source_message", "")
         status = item.get("status", "active")
 
@@ -412,7 +421,8 @@ async def handle_notes(
     patches = _extract_patches(raw_response)
     for patch in patches:
         try:
-            await _apply_patch(db, user_id, patch, id_map, notes=relevant_notes)
+            async with db.begin_nested():
+                await _apply_patch(db, user_id, patch, id_map, notes=relevant_notes)
         except Exception as exc:
             logger.error("Notes lane: failed to apply patch: %s", exc, exc_info=True)
 

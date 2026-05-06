@@ -241,7 +241,13 @@ async def list_kb_entries(db: AsyncSession, user_id: str, tag: str | None = None
 
 
 async def update_kb_entry(db: AsyncSession, entry_id: str, user_id: str, **fields) -> dict:
-    set_clauses = ", ".join(f"{k} = :{k}" for k in fields)
+    clauses = []
+    for k in fields:
+        if k == "embedding" and fields[k] is not None:
+            clauses.append(f"{k} = CAST(:{k} AS vector)")
+        else:
+            clauses.append(f"{k} = :{k}")
+    set_clauses = ", ".join(clauses)
     row = await db.execute(
         text(f"UPDATE kb_entries SET {set_clauses} WHERE id = :id AND user_id = :uid RETURNING *"),
         {"id": entry_id, "uid": user_id, **fields},
