@@ -14,7 +14,11 @@ Tool implementations return plain dicts. Execution errors are returned as
 """
 from __future__ import annotations
 
+import io
 import logging
+import mimetypes
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -95,6 +99,15 @@ class ListNotesArgs(BaseModel):
         default=False, description="If true, only list notes that have an attached image/PDF/file."
     )
     limit: int = Field(default=20, description="Maximum number of notes to return.")
+
+
+class SendFileArgs(BaseModel):
+    note_id: str = Field(..., description="The id of the note whose attached file to send.")
+    filename: str | None = Field(
+        default=None,
+        description="Short human-friendly name for the file, e.g. 'sem 1 gazette' "
+                    "(the correct extension is added automatically).",
+    )
 
 
 class EditNoteArgs(BaseModel):
@@ -181,6 +194,29 @@ def _coerce_metadata(value: Any) -> dict:
     return {}
 
 
+_MEDIA_TAG_RE = re.compile(r"\(?\s*(?:MEDIA_REF|LOCAL_PATH):\s*[^\s)]+\s*\)?")
+
+
+def _clean_content(content: str | None) -> str:
+    """Strip internal media tags/markers so the model sees only human content."""
+    text = _MEDIA_TAG_RE.sub("", content or "")
+    for marker in ("[DOCUMENT]", "[IMAGE]", "[AUDIO]"):
+        text = text.replace(marker, "")
+    return text.strip()
+
+
+def _safe_filename(name: str, ext: str) -> str:
+    """Turn a note title or user-supplied label into a clean download filename."""
+    base = (name or "file").splitlines()[0]
+    base = re.sub(r"(?i)^\s*user instruction:\s*", "", base)
+    base = re.sub(r"(?i)^\s*(save it as|save as)\s*", "", base)
+    base = re.sub(r"[^\w\s.-]", "", base).strip()
+    base = re.sub(r"\s+", " ", base)[:60].strip() or "file"
+    if ext and not base.lower().endswith(ext.lower()):
+        base += ext
+    return base
+
+
 async def _create_note(ctx: ToolContext, args: CreateNoteArgs) -> dict:
     title = await generate_note_title(args.content)
     metadata = await extract_metadata(args.content)
@@ -258,9 +294,11 @@ async def _search_notes(ctx: ToolContext, args: SearchNotesArgs) -> dict:
         {
             "id": str(n["id"]),
             "title": n.get("title"),
-            "content": n.get("content"),
+            "content": _clean_content(n.get("content")),
             "category": _coerce_metadata(n.get("metadata")).get("category"),
-            "media_url": n.get("media_url"),
+            # Whether this note has a deliverable file. To send it, call send_file
+            # with this note's id — do NOT paste the path/link into the reply.
+            "has_media": bool(n.get("media_url")),
             "created_at": n["created_at"].isoformat() if n.get("created_at") else None,
         }
         for n in top
@@ -283,6 +321,54 @@ async def _list_notes(ctx: ToolContext, args: ListNotesArgs) -> dict:
         for r in rows
     ]
     return {"count": len(notes), "notes": notes}
+
+
+async def _send_file(ctx: ToolContext, args: SendFileArgs) -> dict:
+    """Deliver a note's attached file to the user's Telegram chat, from MinIO."""
+    note = await q.get_kb_entry(ctx.db, args.note_id, ctx.user_id)
+    if not note:
+        return {"error": f"No note found with id {args.note_id}."}
+    key = note.get("media_url")
+    if not key:
+        return {"error": "That note has no attached file."}
+
+    # Fetch the bytes (MinIO key, or a legacy local path).
+    data: bytes | None = None
+    if key.startswith("/media/") or key.startswith("media_bucket/"):
+        local_path = key.lstrip("/").replace("media/", "media_bucket/", 1)
+        try:
+            with open(local_path, "rb") as f:
+                data = f.read()
+        except Exception as exc:
+            return {"error": f"Could not read legacy file: {exc}"}
+    else:
+        from services import storage
+        try:
+            data = await storage.download_bytes(key)
+        except Exception as exc:
+            logger.error("send_file: MinIO fetch failed for %s: %s", key, exc)
+            return {"error": "Could not fetch the file from storage."}
+
+    ext = os.path.splitext(key)[1] or (mimetypes.guess_extension(note.get("media_type") or "") or "")
+    filename = _safe_filename(args.filename or note.get("title") or "file", ext)
+    mime = note.get("media_type") or mimetypes.guess_type(filename)[0] or ""
+
+    from services.telegram import get_telegram_client
+    tg = get_telegram_client()
+    chat_id = ctx.user.get("telegram_id")
+    buf = io.BytesIO(data)
+    buf.name = filename
+    try:
+        if mime.startswith("image/"):
+            await tg.bot.send_photo(chat_id=chat_id, photo=buf)
+        elif mime.startswith("video/"):
+            await tg.bot.send_video(chat_id=chat_id, video=buf)
+        else:
+            await tg.bot.send_document(chat_id=chat_id, document=buf, filename=filename)
+    except Exception as exc:
+        logger.error("send_file: Telegram send failed for %s: %s", filename, exc)
+        return {"error": "Could not deliver the file."}
+    return {"ok": True, "sent": filename}
 
 
 async def _edit_note(ctx: ToolContext, args: EditNoteArgs) -> dict:
@@ -477,6 +563,7 @@ _REGISTRY: dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], Awaitab
     "create_note": (CreateNoteArgs, _create_note),
     "search_notes": (SearchNotesArgs, _search_notes),
     "list_notes": (ListNotesArgs, _list_notes),
+    "send_file": (SendFileArgs, _send_file),
     "edit_note": (EditNoteArgs, _edit_note),
     "delete_note": (DeleteNoteArgs, _delete_note),
     "confirm_delete": (_NoArgs, _confirm_delete),
@@ -505,6 +592,10 @@ TOOL_SCHEMAS: list[dict] = [
     _schema("list_notes", "List the user's saved notes (most recent first). Set media_only=true "
             "to list only notes that have an attached image/PDF/file. Use this for requests like "
             "'what do you have', 'list my notes', 'show my files/images/pdfs'.", ListNotesArgs),
+    _schema("send_file", "Deliver a note's attached file (PDF/image/etc.) to the user's chat. "
+            "Find the note first with search_notes, then call this with its id and a short "
+            "human-friendly filename. This sends the actual file — do not paste links or paths.",
+            SendFileArgs),
     _schema("edit_note", "Overwrite the content of an existing note. Find the note id with "
             "search_notes first.", EditNoteArgs),
     _schema("delete_note", "Stage a note for deletion (does NOT delete yet). Returns "
