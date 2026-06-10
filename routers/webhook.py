@@ -262,6 +262,7 @@ async def _handle_message(update: Update, display_name: str | None, tg: Any) -> 
         
         import io
         import re
+        import mimetypes
         # The model echoes a media tag when the user wants a file delivered:
         #   (MEDIA_REF: media/<id>.<ext>)  -> fetched from MinIO
         #   (LOCAL_PATH: media_bucket/...)  -> legacy local files (pre-MinIO)
@@ -269,27 +270,41 @@ async def _handle_message(update: Update, display_name: str | None, tg: Any) -> 
         legacy_match = re.search(r'LOCAL_PATH:\s*(media_bucket/[^\s)]+)', reply)
         clean_reply = re.sub(r'\(?\s*(?:MEDIA_REF|LOCAL_PATH):\s*[^\s)]+\s*\)?', '', reply).strip()
 
-        photo_bytes: bytes | None = None
+        media_key: str | None = None
+        media_bytes_out: bytes | None = None
         if ref_match:
+            media_key = ref_match.group(1)
             from services import storage
             try:
-                photo_bytes = await storage.download_bytes(ref_match.group(1))
+                media_bytes_out = await storage.download_bytes(media_key)
             except Exception as e:
-                logger.error("Failed to fetch media %s from MinIO: %s", ref_match.group(1), e)
+                logger.error("Failed to fetch media %s from MinIO: %s", media_key, e)
         elif legacy_match:
+            media_key = legacy_match.group(1)
             try:
-                with open(legacy_match.group(1), "rb") as f:
-                    photo_bytes = f.read()
+                with open(media_key, "rb") as f:
+                    media_bytes_out = f.read()
             except Exception as e:
-                logger.error("Failed to read legacy local media %s: %s", legacy_match.group(1), e)
+                logger.error("Failed to read legacy local media %s: %s", media_key, e)
 
-        if photo_bytes is not None:
+        if media_bytes_out is not None:
+            filename = media_key.rsplit("/", 1)[-1]
+            mime = mimetypes.guess_type(filename)[0] or ""
+            buf = io.BytesIO(media_bytes_out)
+            buf.name = filename
             try:
-                await tg.bot.send_photo(
-                    chat_id=chat_id, photo=io.BytesIO(photo_bytes), caption=clean_reply or None,
-                )
+                # Choose the right Telegram method by file type — PDFs/docs sent as
+                # photos are rejected, so route non-images to send_document/video.
+                if mime.startswith("image/"):
+                    await tg.bot.send_photo(chat_id=chat_id, photo=buf, caption=clean_reply or None)
+                elif mime.startswith("video/"):
+                    await tg.bot.send_video(chat_id=chat_id, video=buf, caption=clean_reply or None)
+                else:
+                    await tg.bot.send_document(
+                        chat_id=chat_id, document=buf, filename=filename, caption=clean_reply or None,
+                    )
             except Exception as e:
-                logger.error("Failed to send photo: %s", e)
+                logger.error("Failed to send media %s: %s", media_key, e)
                 await tg.send_text(to=chat_id, text=clean_reply or reply)
         elif reply:
             await tg.send_text(to=chat_id, text=reply)
