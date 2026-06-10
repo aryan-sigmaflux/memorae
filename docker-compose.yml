@@ -37,6 +37,14 @@ services:
       - "9001:9001"   # web console (http://your-host:9001)
     restart: unless-stopped
 
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollamadata:/root/.ollama
+    restart: unless-stopped
+    # After first start, pull the embedding model once:
+    #   docker compose exec ollama ollama pull nomic-embed-text
+
   app:
     build: .
     env_file: .env
@@ -49,10 +57,13 @@ services:
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: ${MINIO_BUCKET:-memorae-media}
       MINIO_SECURE: "false"
+      OLLAMA_BASE_URL: http://ollama:11434/v1
     depends_on:
       db:
         condition: service_healthy
       minio:
+        condition: service_started
+      ollama:
         condition: service_started
     ports:
       - "8005:8003"   # host:container — nginx proxies to 127.0.0.1:8005
@@ -61,3 +72,4 @@ services:
 volumes:
   pgdata:
   miniodata:
+  ollamadata:

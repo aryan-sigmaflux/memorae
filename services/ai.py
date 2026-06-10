@@ -235,12 +235,11 @@ async def rerank_notes(query: str, notes: list[dict], top_n: int = 3) -> list[di
 
 async def generate_embedding(text: str) -> list[float]:
     """Generate a vector embedding for the given text via local Ollama."""
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+    client = AsyncOpenAI(base_url=settings.ollama_base_url, api_key="ollama")
     try:
         response = await client.embeddings.create(
-            model="nomic-embed-text",
-            input=text
+            model=settings.embedding_model,
+            input=text,
         )
         return response.data[0].embedding
     except Exception as exc:

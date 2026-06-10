@@ -55,9 +55,18 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
--- Backfill the metadata column on databases created before v2 (CREATE TABLE
--- IF NOT EXISTS above is a no-op once the table already exists).
-ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+-- Reconcile columns on databases created before the current schema (CREATE
+-- TABLE IF NOT EXISTS above is a no-op once the table already exists, so it
+-- never adds missing columns — these ALTERs do).
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS tags          TEXT[] DEFAULT '{}';
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS context_clues TEXT[] DEFAULT '{}';
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS metadata      JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS embedding     vector(768);
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS source        TEXT DEFAULT 'manual';
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS status        TEXT DEFAULT 'active';
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS source_message TEXT;
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS media_url     TEXT;
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS media_type    TEXT;
 CREATE INDEX IF NOT EXISTS idx_kb_user  ON kb_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_kb_tags  ON kb_entries USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_kb_meta  ON kb_entries USING GIN(metadata);
