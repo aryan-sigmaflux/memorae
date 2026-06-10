@@ -254,6 +254,20 @@ async def search_kb(
     return results
 
 
+async def list_user_notes(
+    db: AsyncSession, user_id: str, media_only: bool = False, limit: int = 20,
+) -> list[dict]:
+    """List a user's notes, most recent first. Optionally only those with media."""
+    where = "user_id = :uid"
+    if media_only:
+        where += " AND media_url IS NOT NULL"
+    rows = await db.execute(
+        text(f"SELECT * FROM kb_entries WHERE {where} ORDER BY updated_at DESC LIMIT :lim"),
+        {"uid": user_id, "lim": limit},
+    )
+    return _rows(rows.fetchall())
+
+
 async def get_kb_entry(db: AsyncSession, entry_id: str, user_id: str) -> dict | None:
     row = await db.execute(
         text("SELECT * FROM kb_entries WHERE id = :id AND user_id = :uid"),

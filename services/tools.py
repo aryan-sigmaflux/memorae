@@ -90,6 +90,13 @@ class SearchNotesArgs(BaseModel):
     )
 
 
+class ListNotesArgs(BaseModel):
+    media_only: bool = Field(
+        default=False, description="If true, only list notes that have an attached image/PDF/file."
+    )
+    limit: int = Field(default=20, description="Maximum number of notes to return.")
+
+
 class EditNoteArgs(BaseModel):
     note_id: str = Field(..., description="The id of the note to edit.")
     content: str = Field(..., description="The full new content for the note.")
@@ -259,6 +266,23 @@ async def _search_notes(ctx: ToolContext, args: SearchNotesArgs) -> dict:
         for n in top
     ]
     return {"notes": notes}
+
+
+async def _list_notes(ctx: ToolContext, args: ListNotesArgs) -> dict:
+    rows = await q.list_user_notes(
+        ctx.db, ctx.user_id, media_only=args.media_only, limit=args.limit,
+    )
+    notes = [
+        {
+            "id": str(r["id"]),
+            "title": r.get("title"),
+            "category": _coerce_metadata(r.get("metadata")).get("category"),
+            "has_media": bool(r.get("media_url")),
+            "media_type": r.get("media_type"),
+        }
+        for r in rows
+    ]
+    return {"count": len(notes), "notes": notes}
 
 
 async def _edit_note(ctx: ToolContext, args: EditNoteArgs) -> dict:
@@ -452,6 +476,7 @@ class _NoArgs(BaseModel):
 _REGISTRY: dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], Awaitable[dict]]]] = {
     "create_note": (CreateNoteArgs, _create_note),
     "search_notes": (SearchNotesArgs, _search_notes),
+    "list_notes": (ListNotesArgs, _list_notes),
     "edit_note": (EditNoteArgs, _edit_note),
     "delete_note": (DeleteNoteArgs, _delete_note),
     "confirm_delete": (_NoArgs, _confirm_delete),
@@ -477,6 +502,9 @@ TOOL_SCHEMAS: list[dict] = [
             "generates the title and embedding automatically.", CreateNoteArgs),
     _schema("search_notes", "Search the user's saved notes semantically. Returns the most "
             "relevant notes (with their ids) or an empty list.", SearchNotesArgs),
+    _schema("list_notes", "List the user's saved notes (most recent first). Set media_only=true "
+            "to list only notes that have an attached image/PDF/file. Use this for requests like "
+            "'what do you have', 'list my notes', 'show my files/images/pdfs'.", ListNotesArgs),
     _schema("edit_note", "Overwrite the content of an existing note. Find the note id with "
             "search_notes first.", EditNoteArgs),
     _schema("delete_note", "Stage a note for deletion (does NOT delete yet). Returns "
