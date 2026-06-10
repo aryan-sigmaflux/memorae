@@ -55,7 +55,7 @@ services:
       minio:
         condition: service_started
     ports:
-      - "8003:8003"   # put nginx/your proxy in front for HTTPS + the webhook
+      - "8005:8003"   # host:container — nginx proxies to 127.0.0.1:8005
     restart: unless-stopped
 
 volumes:
