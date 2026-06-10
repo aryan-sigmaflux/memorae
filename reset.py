@@ -57,24 +57,32 @@ async def reset_db():
         print(f"   - Deleted user Profile from database")
 
         await conn.close()
-        
-        # 4. Wipe Local Physical Files (media_bucket)
+
+        # 4. Wipe media objects (MinIO bucket; legacy local files as fallback)
         if media_urls:
-            print(f"📁 Deleting {len(media_urls)} physical media files...")
+            print(f"📁 Deleting {len(media_urls)} media objects...")
+            from services import storage
             count = 0
             for url in media_urls:
-                # url is usually /media/filename.ext or similar
-                # we need to map it to media_bucket/filename.ext
-                local_path = url.lstrip("/").replace("media/", "media_bucket/")
-                if os.path.exists(local_path):
-                    try:
-                        os.remove(local_path)
-                        count += 1
-                    except Exception as e:
-                        print(f"⚠️ Could not remove {local_path}: {e}")
-            print(f"✅ Deleted {count} physical files.")
+                # Legacy local files were stored as "/media/<name>"; new objects
+                # are MinIO keys like "media/<name>".
+                if url.startswith("/media/"):
+                    local_path = url.lstrip("/").replace("media/", "media_bucket/")
+                    if os.path.exists(local_path):
+                        try:
+                            os.remove(local_path)
+                            count += 1
+                        except Exception as e:
+                            print(f"⚠️ Could not remove local {local_path}: {e}")
+                    continue
+                try:
+                    await storage.delete(url)
+                    count += 1
+                except Exception as e:
+                    print(f"⚠️ Could not remove object {url}: {e}")
+            print(f"✅ Deleted {count} media objects.")
         else:
-            print("ℹ️ No physical media found to delete.")
+            print("ℹ️ No media found to delete.")
             
         print(f"\n✨ USER '{display_name}' RESET COMPLETE ✨")
         

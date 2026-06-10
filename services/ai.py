@@ -13,14 +13,7 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from config import get_settings
-from services.toon import (
-    INTENT_SYSTEM,
-    Intent,
-    ParsedIntent,
-    extract_recurrence,
-    get_system_prompt,
-    quick_parse,
-)
+from services.persona import get_system_prompt
 
 from zoneinfo import ZoneInfo
 
@@ -76,6 +69,168 @@ async def complete(
     return response.choices[0].message.content or ""
 
 
+# ── Tool-calling completion (Memorae v2 agent loop) ──────────────────────────
+
+async def complete_with_tools(
+    messages: list[dict],
+    tools: list[dict],
+    max_tokens: int | None = None,
+) -> tuple[Any, int]:
+    """One round-trip of a native tool-calling completion.
+
+    `messages` must already include the system message and full running
+    transcript (user turn, prior assistant tool calls, tool results).
+    Returns `(assistant_message, total_tokens_used)` so the caller can inspect
+    `.tool_calls` / `.content` and enforce a per-turn token ceiling.
+    """
+    response = await _client().chat.completions.create(
+        model=settings.ai_model,
+        max_tokens=max_tokens or settings.ai_max_tokens,
+        messages=messages,
+        tools=tools,
+        tool_choice="auto",
+    )
+    usage = getattr(response, "usage", None)
+    total_tokens = getattr(usage, "total_tokens", 0) or 0
+    return response.choices[0].message, total_tokens
+
+
+# Cached tiktoken encoder for client-side token estimation (fallback when the
+# provider does not return usage, which OpenRouter often omits).
+_ENCODER = None
+
+
+def count_tokens(text: str) -> int:
+    """Best-effort token count. Falls back to a ~4-chars/token heuristic."""
+    global _ENCODER
+    if _ENCODER is None:
+        try:
+            import tiktoken
+            _ENCODER = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _ENCODER = False  # mark as unavailable
+    if _ENCODER:
+        try:
+            return len(_ENCODER.encode(text))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+async def _fast_json(prompt: str, system: str, max_tokens: int = 300) -> dict:
+    """Call the cheap/fast model and parse a JSON object response."""
+    try:
+        response = await _client().chat.completions.create(
+            model=settings.ai_fast_model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        return json.loads(response.choices[0].message.content or "{}")
+    except Exception as exc:
+        logger.warning("Fast JSON call failed: %s", exc)
+        return {}
+
+
+async def generate_note_title(content: str) -> str:
+    """Generate a 10-15 word dense, keyword-rich title optimised for retrieval."""
+    data = await _fast_json(
+        prompt=f"Content:\n{content}",
+        system=(
+            "You write a single dense, keyword-rich title (10-15 words) for a personal "
+            "note, optimised so the note can be found later by semantic search. Pack in "
+            "the key entities, dates, numbers, and topic words. "
+            'Return JSON: {"title": str}.'
+        ),
+        max_tokens=80,
+    )
+    title = (data.get("title") or "").strip()
+    return title or content[:80].strip()
+
+
+async def extract_metadata(content: str) -> dict:
+    """Extract structured metadata (category, entities, dates) from a note.
+
+    Returns a JSON-serialisable dict suitable for the `metadata` JSONB column.
+    Always returns a dict; on failure returns an empty one.
+    """
+    data = await _fast_json(
+        prompt=f"Note content:\n{content}",
+        system=(
+            "Extract structured metadata from a personal note. "
+            'Return JSON: {"category": str, "entities": [str], "dates": [str]} where '
+            "category is a single lowercase label (e.g. work, health, finance, travel, "
+            "personal), entities are key people/places/orgs/things mentioned, and dates "
+            "are any explicit calendar dates in ISO format (YYYY-MM-DD). Use empty lists "
+            "when none apply."
+        ),
+        max_tokens=200,
+    )
+    if not isinstance(data, dict):
+        return {}
+    category = data.get("category")
+    entities = data.get("entities")
+    dates = data.get("dates")
+    return {
+        "category": category if isinstance(category, str) else None,
+        "entities": entities if isinstance(entities, list) else [],
+        "dates": dates if isinstance(dates, list) else [],
+    }
+
+
+async def rewrite_query(query: str) -> str:
+    """Rewrite a casual user query into a dense retrieval query."""
+    data = await _fast_json(
+        prompt=f"User query: {query}",
+        system=(
+            "Rewrite the user's casual question into a dense, keyword-rich search query "
+            "for semantic retrieval over their personal notes. Keep any specific labels, "
+            'numbers, names, and dates. Return JSON: {"query": str}.'
+        ),
+        max_tokens=80,
+    )
+    rewritten = (data.get("query") or "").strip()
+    return rewritten or query
+
+
+async def rerank_notes(query: str, notes: list[dict], top_n: int = 3) -> list[dict]:
+    """LLM-based reranker: pick the most relevant notes for the query.
+
+    Dependency-free stand-in for a cross-encoder. Returns at most `top_n` notes
+    in relevance order. On any failure, falls back to the original order.
+    """
+    if len(notes) <= top_n:
+        return notes
+
+    catalogue = "\n".join(
+        f'[{i}] {n.get("title", "")} :: {(n.get("content") or "")[:200]}'
+        for i, n in enumerate(notes)
+    )
+    data = await _fast_json(
+        prompt=f"Query: {query}\n\nNotes:\n{catalogue}",
+        system=(
+            "You are a reranker. Given a query and a list of candidate notes, return the "
+            "indices of the most relevant notes, best first, excluding irrelevant ones. "
+            'Return JSON: {"indices": [int, ...]} with at most '
+            f"{top_n} indices."
+        ),
+        max_tokens=100,
+    )
+    indices = data.get("indices")
+    if not isinstance(indices, list):
+        return notes[:top_n]
+    picked: list[dict] = []
+    for idx in indices:
+        if isinstance(idx, int) and 0 <= idx < len(notes):
+            picked.append(notes[idx])
+        if len(picked) >= top_n:
+            break
+    return picked or notes[:top_n]
+
+
 # ── Embeddings ────────────────────────────────────────────────────────────────
 
 async def generate_embedding(text: str) -> list[float]:
@@ -93,49 +248,6 @@ async def generate_embedding(text: str) -> list[float]:
         return []
 
 
-# ── Intent parsing ────────────────────────────────────────────────────────────
-
-async def parse_intent(user_message: str, history_msgs: list[dict] = None) -> ParsedIntent:
-    """
-    Try a cheap regex parse first; fall back to AI for ambiguous messages.
-    """
-    quick = quick_parse(user_message)
-    # Only use quick_parse for intents that don't require AI extraction
-    if quick in (Intent.LIST_REMINDERS, Intent.SHOW_CALENDAR, Intent.CONFIRM_SAVE):
-        return ParsedIntent(intent=quick, payload={}, raw=user_message)
-
-    if history_msgs:
-        context = "Recent History:\n" + "\n".join([f"{m['role']}: {m['content']}" for m in history_msgs[-3:]])
-        prompt = f"{context}\n\nUser message: {user_message}"
-    else:
-        prompt = user_message
-
-    try:
-        from datetime import datetime
-        now_local = datetime.now(USER_TZ)
-        dated_system = (
-            f"Today is {now_local.strftime('%Y-%m-%d, %A')}. "
-            f"Current time is {now_local.strftime('%I:%M %p')} ({USER_TZ_LABEL}). "
-            f"Timezone is {USER_TZ_LABEL}.\n\n" + INTENT_SYSTEM
-        )
-        raw_json = await complete(
-            messages=[{"role": "user", "content": prompt}],
-            system=dated_system,
-            max_tokens=300,
-            json_mode=True,
-        )
-        data = json.loads(raw_json)
-        intent = Intent(data.get("intent", "chat"))
-        payload = data.get("payload", {})
-        logger.debug("Intent parse result: intent=%s payload=%s", intent, payload)
-    except Exception as exc:
-        logger.warning("Intent parse failed: %s", exc)
-        intent = quick or Intent.CHAT
-        payload = {}
-
-    return ParsedIntent(intent=intent, payload=payload, raw=user_message)
-
-
 # ── Structured extraction helpers ─────────────────────────────────────────────
 
 async def extract_kb_fields(text: str) -> dict:
@@ -147,7 +259,7 @@ async def extract_kb_fields(text: str) -> dict:
         "Format: '{user_label} - {institution} - {date}'. "
         "Example: 'Semester 1 Gazette - Thakur College - December 2023'. "
         "NEVER use a generic title when the user has explicitly named the document. "
-        "IMPORTANT: If the text contains a file path tag like (LOCAL_PATH: media_bucket/...), you MUST include that exact tag in the 'content' field. Do not discard it. "
+        "IMPORTANT: If the text contains a media tag like (MEDIA_REF: media/...), you MUST include that exact tag in the 'content' field. Do not discard it. "
         "Be concise. Text:\n\n" + text
     )
     raw = await complete(
@@ -160,83 +272,6 @@ async def extract_kb_fields(text: str) -> dict:
         return json.loads(raw)
     except Exception:
         return {"title": text[:60], "content": text, "tags": []}
-
-
-async def parse_datetime(datetime_str: str) -> str | None:
-    """Normalize a datetime string (from intent parser) and parse it with dateparser.
-
-    Raises ValueError if no date/time could be parsed.
-    """
-    from datetime import datetime, timezone
-    import dateparser
-
-    if not datetime_str or not datetime_str.strip():
-        raise ValueError("Empty datetime string")
-
-    # Pre-clean recurring keywords
-    _, cleaned_str = extract_recurrence(datetime_str)
-
-    # Normalize: fix typos / expand abbreviations via a lightweight LLM call
-    try:
-        normalized_str = await complete(
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Fix any spelling mistakes in this time expression and return "
-                    f"only the corrected string, nothing else: '{cleaned_str}'"
-                ),
-            }],
-            system="You are a spelling corrector. Return only the corrected time expression, no quotes, no explanation.",
-            max_tokens=50,
-        )
-        normalized_str = normalized_str.strip().strip("'\"")
-        if not normalized_str:
-            normalized_str = cleaned_str
-    except Exception:
-        normalized_str = cleaned_str
-
-    now_ist = datetime.now(USER_TZ)
-    # dateparser requires a NAIVE datetime for RELATIVE_BASE.
-    # Passing timezone-aware datetimes causes miscalculated relative offsets.
-    naive_base = now_ist.replace(tzinfo=None)
-
-    logger.debug("[DATEPARSER] datetime_str=%r cleaned=%r normalized=%r naive_base=%r",
-                 datetime_str, cleaned_str, normalized_str, naive_base)
-
-    import re
-    result = dateparser.parse(
-        normalized_str,
-        settings={
-            "RELATIVE_BASE": naive_base,
-            "PREFER_DATES_FROM": "future",
-            "TIMEZONE": "Asia/Kolkata",
-            "RETURN_AS_TIMEZONE_AWARE": True,
-            "PREFER_DAY_OF_MONTH": "first",
-        }
-    )
-    
-    if result is None:
-        # Check if it looks like a bare time (HH:MM or 6pm or 14:30)
-        # Patterns: 10:55, 10:55am, 6pm, 14:30
-        if re.match(r'^(\d{1,2}:\d{2}(am|pm)?|\d{1,2}(am|pm))$', normalized_str.strip(), re.IGNORECASE):
-            logger.debug("[DATEPARSER] Failed initial parse but looks like bare time, trying 'today at' fallback")
-            result = dateparser.parse(
-                f"today at {normalized_str}",
-                settings={
-                    "RELATIVE_BASE": naive_base,
-                    "PREFER_DATES_FROM": "future",
-                    "TIMEZONE": "Asia/Kolkata",
-                    "RETURN_AS_TIMEZONE_AWARE": True,
-                }
-            )
-
-    logger.debug("[DATEPARSER] input=%r normalized=%r result=%r", datetime_str, normalized_str, result)
-
-    if result is None:
-        logger.warning("[DATEPARSER] Failed to parse: %r (normalized: %r)", datetime_str, normalized_str)
-        raise ValueError(f"Could not parse time from: {datetime_str!r}")
-
-    return result.astimezone(timezone.utc).isoformat()
 
 
 async def transcribe_audio(audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:

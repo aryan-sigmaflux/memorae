@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
@@ -34,6 +34,15 @@ async def lifespan(app: FastAPI):
     # ── Startup ────────────────────────────────────────────────────────────────
     logger.info("Starting Memorae (env=%s)", settings.app_env)
     await init_db()
+    # Ensure the MinIO media bucket exists (best-effort; only if configured).
+    from services import storage
+    if storage.is_configured():
+        try:
+            await storage.ensure_bucket()
+        except Exception as exc:
+            logger.error("Could not reach MinIO at startup: %s", exc)
+    else:
+        logger.warning("MinIO not configured — media uploads will fail until MINIO_* is set.")
     start_scheduler()
     yield
     # ── Shutdown ───────────────────────────────────────────────────────────────
@@ -59,16 +68,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import os
-from fastapi.staticfiles import StaticFiles
-
-# Mount local media bucket
-os.makedirs("media_bucket", exist_ok=True)
-app.mount("/media", StaticFiles(directory="media_bucket"), name="media")
-
 # Routers (all prefixed with /api to match the proxy)
 app.include_router(webhook.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
+
+
+@app.get("/api/media/{key:path}", tags=["media"])
+async def media_redirect(key: str):
+    """Redirect to a short-lived presigned URL for a stored media object.
+
+    Media is served from MinIO, not the local disk. The Telegram bot delivers
+    files by downloading bytes directly; this route exists for a web dashboard
+    or for debugging stored objects by key (e.g. /api/media/media/<id>.jpg).
+    """
+    from fastapi.responses import RedirectResponse
+    from services import storage
+
+    if not storage.is_configured():
+        return Response(status_code=404)
+    try:
+        url = await storage.presigned_url(key)
+    except Exception:
+        return Response(status_code=404)
+    return RedirectResponse(url)
 
 
 @app.get("/api/", tags=["health"])

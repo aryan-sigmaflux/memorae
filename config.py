@@ -22,7 +22,23 @@ class Settings(BaseSettings):
     # AI (OpenRouter)
     openrouter_api_key: str = ""
     ai_model: str = "openai/gpt-4o-mini"
+    # Cheap/fast model for internal steps (title generation, query rewriting, reranking).
+    ai_fast_model: str = "openai/gpt-4o-mini"
     ocr_model: str = "mistralai/mistral-small-3.2-24b-instruct"
+
+    # Minimum cosine similarity a note must clear to be considered a search hit.
+    # Below this, search_notes returns nothing so the model says "not found"
+    # instead of answering from an irrelevant note.
+    search_min_similarity: float = 0.25
+
+    # Agent loop guards (see Memorae v2 §2.2)
+    agent_max_iterations: int = 5
+    agent_max_tool_retries: int = 2
+    # Per-turn token ceiling. The loop aborts and forces a final reply once the
+    # cumulative tokens across iterations exceed this, capping runaway cost.
+    agent_max_tokens_per_turn: int = 20000
+    # Optional price (USD per 1K tokens) used only to log an estimated turn cost.
+    ai_price_per_1k_tokens: float = 0.0
 
     @property
     def is_development(self) -> bool:
@@ -38,6 +54,14 @@ class Settings(BaseSettings):
     @property
     def openrouter_base_url(self) -> str:
         return "https://openrouter.ai/api/v1"
+
+    # MinIO / S3-compatible object storage (media bucket)
+    minio_endpoint: str = ""               # host:port, no scheme, e.g. "localhost:9000"
+    minio_access_key: str = ""
+    minio_secret_key: str = ""
+    minio_bucket: str = "memorae-media"
+    minio_secure: bool = False             # True when MinIO is served over HTTPS
+    minio_region: str = ""
 
     # Google
     google_client_id: str = ""

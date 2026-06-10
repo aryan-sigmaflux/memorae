@@ -1,0 +1,63 @@
+# Memorae full stack: app + Postgres (pgvector) + MinIO.
+#
+#   docker compose up -d --build      # start everything
+#   docker compose logs -f app        # tail app logs
+#   docker compose down               # stop (keeps data volumes)
+#
+# Secrets (OpenRouter, Telegram, Google, SECRET_KEY) come from the host .env.
+# The infra wiring below (DATABASE_URL, MINIO_*) is set automatically here, so
+# you do NOT need to put those in .env.
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-memorae}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memorae}
+      POSTGRES_DB: ${POSTGRES_DB:-memorae}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memorae} -d ${POSTGRES_DB:-memorae}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console (http://your-host:9001)
+    restart: unless-stopped
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Infra connections point at the compose service names — these override
+      # whatever is in .env.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-memorae}:${POSTGRES_PASSWORD:-memorae}@db:5432/${POSTGRES_DB:-memorae}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-memorae-media}
+      MINIO_SECURE: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    ports:
+      - "8003:8003"   # put nginx/your proxy in front for HTTPS + the webhook
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:

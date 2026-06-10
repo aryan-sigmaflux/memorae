@@ -144,13 +144,15 @@ async def create_kb_entry(
     source_message: str | None = None,
     media_url: str | None = None,
     media_type: str | None = None,
+    metadata: dict | None = None,
 ) -> dict:
+    import json
     emb_str = str(embedding) if embedding else None
 
     row = await db.execute(
         text(
-            "INSERT INTO kb_entries (user_id, title, content, tags, context_clues, embedding, source, status, source_message, media_url, media_type) "
-            "VALUES (:uid, :title, :content, :tags, :ctx, CAST(:emb AS vector), :src, :status, :smsg, :url, :type) RETURNING *"
+            "INSERT INTO kb_entries (user_id, title, content, tags, context_clues, metadata, embedding, source, status, source_message, media_url, media_type) "
+            "VALUES (:uid, :title, :content, :tags, :ctx, CAST(:meta AS jsonb), CAST(:emb AS vector), :src, :status, :smsg, :url, :type) RETURNING *"
         ),
         {
             "uid": user_id,
@@ -158,6 +160,7 @@ async def create_kb_entry(
             "content": content,
             "tags": tags or [],
             "ctx": context_clues or [],
+            "meta": json.dumps(metadata or {}),
             "emb": emb_str,
             "src": source,
             "status": status,
@@ -169,22 +172,47 @@ async def create_kb_entry(
     return _row(row.fetchone())
 
 
-async def search_kb(db: AsyncSession, user_id: str, query: str, limit: int = 5, embedding: list[float] | None = None) -> list[dict]:
+async def search_kb(
+    db: AsyncSession,
+    user_id: str,
+    query: str,
+    limit: int = 5,
+    embedding: list[float] | None = None,
+    category: str | None = None,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+) -> list[dict]:
     """
     Search KB entries using semantic search via pgvector.
     Results are ranked by cosine distance (embedding <=> :emb).
+
+    Optional metadata filters (Memorae v2 §3): `category` matches
+    metadata->>'category'; `date_from`/`date_to` bound created_at.
     """
+    # Build shared filter clause + params for both the vector and fallback paths.
+    filters = ""
+    params: dict[str, Any] = {"uid": user_id}
+    if category:
+        filters += " AND metadata->>'category' = :category"
+        params["category"] = category
+    if date_from:
+        filters += " AND created_at >= :date_from"
+        params["date_from"] = date_from
+    if date_to:
+        filters += " AND created_at <= :date_to"
+        params["date_to"] = date_to
+
     if embedding:
-        emb_str = str(embedding)
+        params["emb"] = str(embedding)
         rows = await db.execute(
             text(
                 "SELECT *, 1 - (embedding <=> CAST(:emb AS vector)) AS similarity_score "
                 "FROM kb_entries "
-                "WHERE user_id = :uid AND embedding IS NOT NULL "
+                "WHERE user_id = :uid AND embedding IS NOT NULL" + filters + " "
                 "ORDER BY embedding <=> CAST(:emb AS vector) "
                 "LIMIT 15"
             ),
-            {"uid": user_id, "emb": emb_str},
+            params,
         )
         results = _rows(rows.fetchall())
         if results:
@@ -211,19 +239,27 @@ async def search_kb(db: AsyncSession, user_id: str, query: str, limit: int = 5, 
             results.sort(key=score, reverse=True)
             return results[:limit]
 
-    # Fallback: if no embeddings exist or semantic search yields nothing, return the most recent entries 
+    # Fallback: if no embeddings exist or semantic search yields nothing, return the most recent entries
     # to act as a "working memory" context for the AI, so it can deduce answers fluidly.
     rows = await db.execute(
         text(
             "SELECT * FROM kb_entries "
-            "WHERE user_id = :uid "
+            "WHERE user_id = :uid" + filters + " "
             "ORDER BY updated_at DESC LIMIT :lim"
         ),
-        {"uid": user_id, "lim": limit},
+        {**params, "lim": limit},
     )
     results = _rows(rows.fetchall())
 
     return results
+
+
+async def get_kb_entry(db: AsyncSession, entry_id: str, user_id: str) -> dict | None:
+    row = await db.execute(
+        text("SELECT * FROM kb_entries WHERE id = :id AND user_id = :uid"),
+        {"id": entry_id, "uid": user_id},
+    )
+    return _row(row.fetchone()) or None
 
 
 async def list_kb_entries(db: AsyncSession, user_id: str, tag: str | None = None) -> list[dict]:
@@ -343,6 +379,64 @@ async def delete_reminder_by_query(db: AsyncSession, user_id: str, query: str) -
         {"uid": user_id, "q": f"%{query}%"},
     )
     return result.rowcount
+
+
+# ── Pending actions (server-side conversation state) ─────────────────────────
+
+async def set_pending_action(
+    db: AsyncSession, user_id: str, kind: str, payload: dict, ttl_seconds: int = 300,
+) -> None:
+    """Upsert the user's single in-flight pending action with a TTL."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+    await db.execute(
+        text(
+            "INSERT INTO pending_actions (user_id, kind, payload, expires_at) "
+            "VALUES (:uid, :kind, CAST(:payload AS jsonb), :exp) "
+            "ON CONFLICT (user_id) DO UPDATE SET "
+            "kind = :kind, payload = CAST(:payload AS jsonb), expires_at = :exp, created_at = NOW()"
+        ),
+        {"uid": user_id, "kind": kind, "payload": json.dumps(payload), "exp": expires_at},
+    )
+
+
+async def get_pending_action(db: AsyncSession, user_id: str, kind: str | None = None) -> dict | None:
+    """Return the user's pending action if present, unexpired, and matching `kind`.
+
+    Expired rows are cleared lazily. `payload` is always returned as a dict.
+    """
+    from datetime import datetime, timezone
+
+    row = await db.execute(
+        text("SELECT * FROM pending_actions WHERE user_id = :uid"), {"uid": user_id}
+    )
+    rec = _row(row.fetchone())
+    if not rec:
+        return None
+    if rec["expires_at"] < datetime.now(timezone.utc):
+        await clear_pending_action(db, user_id)
+        return None
+    if kind and rec["kind"] != kind:
+        return None
+
+    payload = rec.get("payload")
+    if isinstance(payload, str):
+        import json
+        try:
+            rec["payload"] = json.loads(payload)
+        except json.JSONDecodeError:
+            rec["payload"] = {}
+    elif not isinstance(payload, dict):
+        rec["payload"] = {}
+    return rec
+
+
+async def clear_pending_action(db: AsyncSession, user_id: str) -> None:
+    await db.execute(
+        text("DELETE FROM pending_actions WHERE user_id = :uid"), {"uid": user_id}
+    )
 
 
 # ── Patches ───────────────────────────────────────────────────────────────────

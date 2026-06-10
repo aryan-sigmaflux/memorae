@@ -9,20 +9,26 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import db.queries as q
-from services.ai import extract_kb_fields, generate_embedding
+from services.ai import extract_kb_fields, extract_metadata, generate_embedding
 
 logger = logging.getLogger(__name__)
 
 
 async def remember(db: AsyncSession, user_id: str, raw_text: str, media_url: str | None = None, media_type: str | None = None) -> dict:
-    """Extract structured fields from raw text and save to KB."""
+    """Extract structured fields from raw text and save to KB.
+
+    Media saves go through this path; it populates `metadata` (category,
+    entities, dates) just like the agent's create_note tool, so category/time
+    filters work uniformly across text and media notes.
+    """
     fields = await extract_kb_fields(raw_text)
-    
+
     title = fields.get("title", raw_text[:60])
     content = fields.get("content", raw_text)
-    
+
     embedding = await generate_embedding(f"{title}\n{content}")
-    
+    metadata = await extract_metadata(content)
+
     entry = await q.create_kb_entry(
         db,
         user_id=user_id,
@@ -30,6 +36,7 @@ async def remember(db: AsyncSession, user_id: str, raw_text: str, media_url: str
         content=content,
         tags=fields.get("tags", []),
         embedding=embedding,
+        metadata=metadata,
         source="telegram",
         media_url=media_url,
         media_type=media_type,

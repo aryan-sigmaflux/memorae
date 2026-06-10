@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./venv/Scripts/python.exe -c \"import main, services.agent, services.tools, services.ai, db.queries; print\\('APP IMPORT OK'\\)\")",
+      "Bash(./venv/Scripts/python.exe -m py_compile services/agent.py services/tools.py services/ai.py services/kb.py db/queries.py routers/webhook.py config.py db/connection.py main.py)",
+      "Bash(./venv/Scripts/python.exe -m py_compile services/storage.py routers/webhook.py main.py reset.py config.py services/persona.py services/ai.py services/agent.py)",
+      "Bash(./venv/Scripts/python.exe -c \"import main; print\\('APP IMPORT OK'\\); import services.storage as s; print\\('storage.is_configured ->', s.is_configured\\(\\)\\)\")",
+      "Bash(./venv/Scripts/python.exe -c \"import minio; print\\('minio installed:', minio.__version__\\)\")",
+      "Bash(./venv/Scripts/python.exe -m pip install \"minio>=7.2.0\")",
+      "Bash(./venv/Scripts/python.exe -c ' *)"
+    ]
+  }
+}

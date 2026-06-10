@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     media_type      TEXT,
     tags            TEXT[] DEFAULT '{}',
     context_clues   TEXT[] DEFAULT '{}',           -- key nouns/entities for semantic matching
+    metadata        JSONB DEFAULT '{}'::jsonb,     -- {category, entities[], dates[]} (Memorae v2 §3)
     embedding       vector(768),                   -- pgvector semantic embedding (nomic-embed-text)
     source          TEXT DEFAULT 'manual',         -- manual | telegram | calendar | media
     status          TEXT DEFAULT 'active',         -- active | done
@@ -54,8 +55,12 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+-- Backfill the metadata column on databases created before v2 (CREATE TABLE
+-- IF NOT EXISTS above is a no-op once the table already exists).
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS idx_kb_user  ON kb_entries(user_id);
 CREATE INDEX IF NOT EXISTS idx_kb_tags  ON kb_entries USING GIN(tags);
+CREATE INDEX IF NOT EXISTS idx_kb_meta  ON kb_entries USING GIN(metadata);
 -- trgm search disabled on aapanel
 
 -- ── Reminders ────────────────────────────────────────────────────────────────
@@ -71,6 +76,18 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(remind_at) WHERE sent = FALSE;
+
+-- ── Pending actions (server-side conversation state) ─────────────────────────
+-- One in-flight action per user: a media-save awaiting confirmation, or a
+-- staged note deletion awaiting confirmation. Survives across workers/restarts
+-- (unlike an in-memory dict) and expires via expires_at. (Memorae v2 §3D)
+CREATE TABLE IF NOT EXISTS pending_actions (
+    user_id     UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL,                 -- 'media_save' | 'delete_note'
+    payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 
 -- ── Patches (AI-suggested edits / drafts) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS patches (
