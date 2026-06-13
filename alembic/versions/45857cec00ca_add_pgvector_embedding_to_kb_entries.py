@@ -22,7 +22,7 @@ def upgrade() -> None:
     """Upgrade schema."""
     op.execute('CREATE EXTENSION IF NOT EXISTS "vector"')
     op.execute('ALTER TABLE kb_entries DROP COLUMN IF EXISTS embedding')
-    op.execute('ALTER TABLE kb_entries ADD COLUMN embedding vector(768)')
+    op.execute('ALTER TABLE kb_entries ADD COLUMN embedding vector(1024)')
 
 
 def downgrade() -> None:

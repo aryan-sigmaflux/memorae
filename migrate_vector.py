@@ -8,7 +8,7 @@ async def migrate():
         print("Adding pgvector extension and column...")
         await session.execute(text('CREATE EXTENSION IF NOT EXISTS "vector"'))
         await session.execute(text('ALTER TABLE kb_entries DROP COLUMN IF EXISTS embedding'))
-        await session.execute(text('ALTER TABLE kb_entries ADD COLUMN embedding vector(768)'))
+        await session.execute(text('ALTER TABLE kb_entries ADD COLUMN embedding vector(1024)'))
         await session.commit()
         print("✅ Database successfully migrated to pgvector!")
 

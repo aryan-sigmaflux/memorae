@@ -51,8 +51,8 @@ Here is what happens behind the back for each specific module/service:
 
 #### 5. Knowledge Base (KB) Service (`services/kb.py`)
 * Powered by `pgvector` for true semantic/vector similarity search.
-* When a user demands a "remember" action, this service extracts a structural `title`, `content`, and descriptive `tags`. It then generates a 768-dimensional semantic embedding using a local Ollama model (`nomic-embed-text`) and stores it natively alongside the data in the PostgreSQL `kb_entries` table.
-* During a "recall" request (e.g. "What's my passport number?"), the service embeds the query via Ollama and uses pgvector's cosine distance operator (`<=>`) to instantly fetch the most semantically relevant memories. The matched results are pushed as *System Prompt Context* alongside the user's question, allowing the LLM to deliver precise answers fluidly.
+* When a user demands a "remember" action, this service extracts a structural `title`, `content`, and descriptive `tags`. It then generates a 1024-dimensional semantic embedding using OpenRouter (`nvidia/llama-nemotron-embed-vl-1b-v2`) and stores it natively alongside the data in the PostgreSQL `kb_entries` table.
+* During a "recall" request (e.g. "What's my passport number?"), the service embeds the query via OpenRouter and uses pgvector's cosine distance operator (`<=>`) to instantly fetch the most semantically relevant memories. The matched results are pushed as *System Prompt Context* alongside the user's question, allowing the LLM to deliver precise answers fluidly.
 
 #### 6. Reminders Scheduler Job (`jobs/reminders.py`)
 * Powered by `APScheduler` wrapped in an AsyncIOScheduler tied to FastAPI's lifespan.

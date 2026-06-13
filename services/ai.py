@@ -234,16 +234,16 @@ async def rerank_notes(query: str, notes: list[dict], top_n: int = 3) -> list[di
 # ── Embeddings ────────────────────────────────────────────────────────────────
 
 async def generate_embedding(text: str) -> list[float]:
-    """Generate a vector embedding for the given text via local Ollama."""
-    client = AsyncOpenAI(base_url=settings.ollama_base_url, api_key="ollama")
+    """Generate a vector embedding for the given text via OpenRouter."""
     try:
-        response = await client.embeddings.create(
+        response = await _client().embeddings.create(
             model=settings.embedding_model,
             input=text,
+            dimensions=settings.embedding_dimensions,
         )
         return response.data[0].embedding
     except Exception as exc:
-        logger.error("Ollama embedding failed: %s", exc)
+        logger.error("OpenRouter embedding failed: %s", exc)
         return []
 
 

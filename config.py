@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     ai_fast_model: str = "openai/gpt-4o-mini"
     ocr_model: str = "mistralai/mistral-small-3.2-24b-instruct"
 
-    # Embeddings (local Ollama). In Docker this points at the ollama service.
-    ollama_base_url: str = "http://localhost:11434/v1"
-    embedding_model: str = "nomic-embed-text"
+    # Embeddings (OpenRouter, same key as completions).
+    embedding_model: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+    embedding_dimensions: int = 1024
 
     # Minimum cosine similarity a note must clear to be considered a search hit.
     # Below this, search_notes returns nothing so the model says "not found"

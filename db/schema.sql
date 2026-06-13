@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS kb_entries (
     tags            TEXT[] DEFAULT '{}',
     context_clues   TEXT[] DEFAULT '{}',           -- key nouns/entities for semantic matching
     metadata        JSONB DEFAULT '{}'::jsonb,     -- {category, entities[], dates[]} (Memorae v2 §3)
-    embedding       vector(768),                   -- pgvector semantic embedding (nomic-embed-text)
+    embedding       vector(1024),                  -- pgvector semantic embedding (nvidia/llama-nemotron-embed-vl-1b-v2)
     source          TEXT DEFAULT 'manual',         -- manual | telegram | calendar | media
     status          TEXT DEFAULT 'active',         -- active | done
     source_message  TEXT,                          -- user's exact original message
@@ -61,7 +61,22 @@ CREATE TABLE IF NOT EXISTS kb_entries (
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS tags          TEXT[] DEFAULT '{}';
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS context_clues TEXT[] DEFAULT '{}';
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS metadata      JSONB DEFAULT '{}'::jsonb;
-ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS embedding     vector(768);
+ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS embedding     vector(1024);
+-- If the embedding column exists at a different dimension (e.g. the old 768-dim
+-- nomic vectors), rebuild it at 1024. Guarded so it only fires on a dimension
+-- change — it does NOT wipe embeddings on every restart. Old vectors are dropped
+-- because they came from a different model and must be regenerated.
+DO $$
+DECLARE dim int;
+BEGIN
+    SELECT atttypmod INTO dim
+    FROM pg_attribute
+    WHERE attrelid = 'kb_entries'::regclass AND attname = 'embedding' AND NOT attisdropped;
+    IF dim IS DISTINCT FROM 1024 THEN
+        ALTER TABLE kb_entries DROP COLUMN IF EXISTS embedding;
+        ALTER TABLE kb_entries ADD COLUMN embedding vector(1024);
+    END IF;
+END $$;
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS source        TEXT DEFAULT 'manual';
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS status        TEXT DEFAULT 'active';
 ALTER TABLE kb_entries ADD COLUMN IF NOT EXISTS source_message TEXT;
